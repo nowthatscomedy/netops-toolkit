@@ -24,6 +24,7 @@ from app.utils.validators import (
 class ProfileEditorDialog(QDialog):
     def __init__(self, parent=None, profile: IPProfile | None = None) -> None:
         super().__init__(parent)
+        self._initial_profile = profile
         self.setWindowTitle("IP 프로필 편집")
         self.resize(420, 360)
 
@@ -103,7 +104,7 @@ class ProfileEditorDialog(QDialog):
             prefix=prefix,
             gateway=gateway,
             dns=parse_dns_servers(self.dns_edit.toPlainText()),
-            target_vendor="",
-            target_ip="",
-            notes="",
+            target_vendor=self._initial_profile.target_vendor if self._initial_profile else "",
+            target_ip=self._initial_profile.target_ip if self._initial_profile else "",
+            notes=self._initial_profile.notes if self._initial_profile else "",
         )

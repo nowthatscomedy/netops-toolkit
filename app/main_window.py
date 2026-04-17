@@ -19,12 +19,12 @@ from PySide6.QtWidgets import (
 
 from app.app_state import AppState
 from app.models.update_models import DownloadedUpdate, UpdateCheckResult
+from app.ui.common import JobRunner
 from app.ui.tabs.diagnostics_tab import DiagnosticsTab
 from app.ui.tabs.interface_tab import InterfaceTab
 from app.ui.tabs.settings_tab import SettingsTab
 from app.ui.tabs.wireless_tab import WirelessTab
 from app.utils.admin import relaunch_as_admin
-from app.utils.threading_utils import FunctionWorker
 from app.version import __version__
 
 
@@ -32,7 +32,8 @@ class MainWindow(QMainWindow):
     def __init__(self, state: AppState, parent=None) -> None:
         super().__init__(parent)
         self.state = state
-        self._active_workers: list[FunctionWorker] = []
+        self._job_runner = JobRunner(self.state.thread_pool, self)
+        self._active_workers = self._job_runner._active_workers
         self._update_busy = False
         self.setWindowTitle("NetOps Toolkit")
         self.resize(1120, 760)
@@ -56,12 +57,12 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab(self.state)
 
         self.tab_widget.addTab(self.interface_tab, "인터페이스")
-        self.tab_widget.addTab(self.diagnostics_tab, "네트워크")
+        self.tab_widget.addTab(self.diagnostics_tab, "진단")
         self.tab_widget.addTab(self.wireless_tab, "무선 상태")
         self.tab_widget.addTab(self.settings_tab, "설정")
         self.setCentralWidget(self.tab_widget)
 
-        toolbar = QToolBar("메인 툴바", self)
+        toolbar = QToolBar("메인 도구", self)
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
         self.restart_admin_action = toolbar.addAction("관리자 권한으로 다시 실행")
@@ -82,11 +83,10 @@ class MainWindow(QMainWindow):
         self.view_menu = QMenu("보기", self)
         self.toggle_log_view_action = QAction("애플리케이션 로그", self)
         self.toggle_log_view_action.setCheckable(True)
-        self.ping_result_view_action = QAction("Ping 결과 표", self)
+        self.ping_result_view_action = QAction("Ping 결과 창", self)
         self.ping_result_view_action.setCheckable(True)
-        self.tcp_result_view_action = QAction("TCPing 결과 표", self)
+        self.tcp_result_view_action = QAction("TCPing 결과 창", self)
         self.tcp_result_view_action.setCheckable(True)
-
         self.view_menu.addAction(self.toggle_log_view_action)
         self.view_menu.addSeparator()
         self.view_menu.addAction(self.ping_result_view_action)
@@ -143,17 +143,14 @@ class MainWindow(QMainWindow):
         if relaunch_as_admin():
             self.close()
             return
-        QMessageBox.warning(self, "실행 실패", "관리자 권한 재실행 요청이 취소되었거나 실패했습니다.")
+        QMessageBox.warning(self, "실행 실패", "관리자 권한 요청이 취소되었거나 실행에 실패했습니다.")
 
     def _sync_log_dock_state(self) -> None:
         shown_state = not self.log_dock.isHidden()
         self.toggle_log_view_action.blockSignals(True)
         self.toggle_log_view_action.setChecked(shown_state)
         self.toggle_log_view_action.blockSignals(False)
-        if self.log_dock.isFloating():
-            self.log_dock.setMaximumHeight(16777215)
-        else:
-            self.log_dock.setMaximumHeight(180)
+        self.log_dock.setMaximumHeight(16777215 if self.log_dock.isFloating() else 180)
 
     def _set_log_dock_visible(self, visible: bool) -> None:
         self.log_dock.setVisible(visible)
@@ -257,7 +254,7 @@ class MainWindow(QMainWindow):
         if result.latest_version:
             details_lines.append(f"최신 버전: {result.latest_version}")
         if result.is_prerelease:
-            details_lines.append("배포 종류: 사전배포")
+            details_lines.append("배포 종류: 사전 배포")
         if result.published_at:
             details_lines.append(f"게시일: {result.published_at}")
         if result.release_url:
@@ -275,12 +272,10 @@ class MainWindow(QMainWindow):
             if manual:
                 QMessageBox.information(self, "업데이트 설정 필요", result.message + "\n\n" + result.details)
             return
-
         if not result.update_available:
             if manual:
                 QMessageBox.information(self, "업데이트 확인", result.message)
             return
-
         if not result.install_ready:
             if manual:
                 QMessageBox.warning(self, "업데이트 파일 확인 필요", result.message + "\n\n" + result.details)
@@ -291,7 +286,7 @@ class MainWindow(QMainWindow):
             f"최신 버전: {result.latest_version}",
         ]
         if result.is_prerelease:
-            message_lines.append("배포 종류: 사전배포")
+            message_lines.append("배포 종류: 사전 배포")
         if result.release_name:
             message_lines.append(f"릴리즈: {result.release_name}")
         if result.asset:
@@ -299,17 +294,11 @@ class MainWindow(QMainWindow):
         if result.verification_source == "github_release_digest":
             message_lines.append("검증 방식: GitHub Releases digest")
         elif result.verification_source == "checksum_asset":
-            message_lines.append("검증 방식: 릴리즈 체크섬 파일")
+            message_lines.append("검증 방식: 체크섬 파일")
+        message_lines.extend(["", "다운로드 및 검증을 마치면 설치 프로그램을 실행할 수 있습니다."])
 
-        message_lines.extend(
-            [
-                "",
-                "다운로드 후 검증을 완료하면 설치 프로그램을 실행할 수 있습니다.",
-            ]
-        )
         if QMessageBox.question(self, "업데이트 발견", "\n".join(message_lines)) != QMessageBox.Yes:
             return
-
         self._download_update(result)
 
     def _download_update(self, check_result: UpdateCheckResult) -> None:
@@ -341,7 +330,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("업데이트 파일 검증 완료")
 
         question = (
-            "검증된 설치 프로그램을 실행할까요?\n\n"
+            "검증한 설치 프로그램을 실행할까요?\n\n"
             "실행하면 현재 프로그램을 종료하고 설치 프로그램을 시작합니다."
         )
         if QMessageBox.question(self, "업데이트 설치", question) != QMessageBox.Yes:
@@ -360,30 +349,26 @@ class MainWindow(QMainWindow):
         self,
         fn: Callable,
         *args,
+        on_started: Callable[[], None] | None = None,
         on_progress: Callable | None = None,
         on_result: Callable | None = None,
         on_finished: Callable | None = None,
         on_error: Callable[[str], None] | None = None,
         **kwargs,
     ) -> None:
-        worker = FunctionWorker(fn, *args, **kwargs)
-        self._active_workers.append(worker)
-        if on_progress:
-            worker.signals.progress.connect(on_progress)
-        if on_result:
-            worker.signals.result.connect(on_result)
-        if on_finished:
-            worker.signals.finished.connect(on_finished)
-        if on_error:
-            worker.signals.error.connect(on_error)
-        else:
-            worker.signals.error.connect(lambda text: QMessageBox.warning(self, "작업 실패", text))
-        worker.signals.finished.connect(lambda worker=worker: self._discard_worker(worker))
-        self.state.thread_pool.start(worker)
+        self._job_runner.start(
+            fn,
+            *args,
+            on_started=on_started,
+            on_progress=on_progress,
+            on_result=on_result,
+            on_finished=on_finished,
+            on_error=on_error,
+            **kwargs,
+        )
 
-    def _discard_worker(self, worker: FunctionWorker) -> None:
-        if worker in self._active_workers:
-            self._active_workers.remove(worker)
+    def _discard_worker(self, worker) -> None:
+        self._job_runner._discard_worker(worker)
 
     def closeEvent(self, event) -> None:
         self._save_ui_state()

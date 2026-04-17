@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThreadPool, Signal
 
-from app.models.profile_models import IPProfile, WifiAdvancedProfile
+from app.models.profile_models import IPProfile
 from app.services.arp_scan_service import ArpScanService
 from app.services.dns_service import DnsService
 from app.services.iperf_service import IperfService
@@ -18,7 +18,6 @@ from app.services.public_iperf_service import PublicIperfService
 from app.services.tcp_check_service import TcpCheckService
 from app.services.trace_service import TraceService
 from app.services.update_service import UpdateService
-from app.services.wifi_profile_service import WifiProfileService
 from app.services.wireless_service import WirelessService
 from app.utils.admin import is_running_as_admin
 from app.utils.file_utils import (
@@ -47,7 +46,6 @@ class AppState(QObject):
 
         self.app_config: dict = {}
         self.ip_profiles: list[IPProfile] = []
-        self.wifi_profiles: list[WifiAdvancedProfile] = []
         self.reload_config_files()
 
         self.powershell_service = PowerShellService(self.logger)
@@ -61,7 +59,6 @@ class AppState(QObject):
         self.wireless_service = WirelessService(self.powershell_service, self.logger, self.oui_service)
         self.iperf_service = IperfService(self.paths, self.logger)
         self.public_iperf_service = PublicIperfService(self.paths, self.logger)
-        self.wifi_profile_service = WifiProfileService(self.powershell_service, self.logger)
         self.update_service = UpdateService(self.logger)
 
     def _emit_log_message(self, message: str) -> None:
@@ -97,9 +94,6 @@ class AppState(QObject):
         if migrated_legacy:
             save_json(self.paths.ip_profiles, [profile.to_dict() for profile in self.ip_profiles])
             save_json(self.paths.vendor_presets, [])
-        self.wifi_profiles = [
-            WifiAdvancedProfile.from_dict(item) for item in load_json(self.paths.wifi_profiles, [])
-        ]
         self.config_reloaded.emit()
         if hasattr(self, "logger"):
             if should_save_app_config:
@@ -125,8 +119,3 @@ class AppState(QObject):
         self.logger.info("Saved %s IP profiles.", len(self.ip_profiles))
         self.config_reloaded.emit()
 
-    def save_wifi_profiles(self, profiles: list[WifiAdvancedProfile]) -> None:
-        self.wifi_profiles = profiles
-        save_json(self.paths.wifi_profiles, [profile.to_dict() for profile in self.wifi_profiles])
-        self.logger.info("Saved %s Wi-Fi profiles.", len(self.wifi_profiles))
-        self.config_reloaded.emit()

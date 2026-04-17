@@ -24,19 +24,16 @@ def parse_port_list(raw_text: str) -> list[int]:
     for part in re.split(r"[\s,;]+", raw_text.strip()):
         if not part:
             continue
-
         if "-" in part:
             start_text, end_text = [token.strip() for token in part.split("-", 1)]
             if not start_text or not end_text:
                 raise ValueError(f"포트 범위 형식이 올바르지 않습니다: {part}")
-
             start_port = int(start_text)
             end_port = int(end_text)
             if start_port > end_port:
                 raise ValueError(f"포트 범위 시작값이 끝값보다 클 수 없습니다: {part}")
             if not 1 <= start_port <= 65535 or not 1 <= end_port <= 65535:
                 raise ValueError(f"포트 번호는 1~65535 범위여야 합니다: {part}")
-
             ports.extend(range(start_port, end_port + 1))
             continue
 
@@ -74,41 +71,37 @@ def _normalize_label(label: str) -> str:
 INTERFACE_FIELD_MAP: dict[str, str] = {
     "name": "interface_name",
     "이름": "interface_name",
-    "이름": "interface_name",
     "description": "description",
-    "설명": "description",
     "설명": "description",
     "state": "state",
     "status": "state",
-    "상태": "state",
     "상태": "state",
     "ssid": "ssid",
     "bssid": "bssid",
     "apbssid": "bssid",
     "radiotype": "radio_type",
-    "라디오타입": "radio_type",
-    "무선규격": "radio_type",
     "phytype": "radio_type",
-    "송수신장치종류": "radio_type",
-    "물리유형": "radio_type",
+    "라디오유형": "radio_type",
+    "라디오종류": "radio_type",
+    "무선유형": "radio_type",
+    "무선종류": "radio_type",
+    "무선규격": "radio_type",
     "channel": "channel",
     "채널": "channel",
-    "채널": "channel",
     "band": "band",
-    "밴드": "band",
     "대역": "band",
+    "밴드": "band",
     "signal": "signal",
-    "신호": "signal",
     "신호": "signal",
     "receiveratembps": "receive_rate_mbps",
     "receiverate": "receive_rate_mbps",
-    "수신속도mbps": "receive_rate_mbps",
     "수신속도mbps": "receive_rate_mbps",
     "수신속도": "receive_rate_mbps",
     "transmitratembps": "transmit_rate_mbps",
     "transmitrate": "transmit_rate_mbps",
     "전송속도mbps": "transmit_rate_mbps",
     "송신속도mbps": "transmit_rate_mbps",
+    "전송속도": "transmit_rate_mbps",
     "송신속도": "transmit_rate_mbps",
     "rssi": "rssi",
 }
@@ -132,9 +125,7 @@ NEARBY_SSID_FIELD_MAP: dict[str, str] = {
     "네트워크유형": "network_type",
     "authentication": "authentication",
     "인증": "authentication",
-    "인증": "authentication",
     "encryption": "encryption",
-    "암호화": "encryption",
     "암호화": "encryption",
 }
 
@@ -142,18 +133,17 @@ NEARBY_SSID_FIELD_MAP: dict[str, str] = {
 NEARBY_AP_FIELD_MAP: dict[str, str] = {
     "signal": "signal_percent",
     "신호": "signal_percent",
-    "신호": "signal_percent",
     "radiotype": "radio_standard",
-    "라디오타입": "radio_standard",
-    "무선규격": "radio_standard",
     "phytype": "radio_standard",
-    "무선송수신장치유형": "radio_standard",
-    "물리유형": "radio_standard",
+    "라디오유형": "radio_standard",
+    "라디오종류": "radio_standard",
+    "무선유형": "radio_standard",
+    "무선종류": "radio_standard",
+    "무선규격": "radio_standard",
     "band": "band",
-    "밴드": "band",
     "대역": "band",
+    "밴드": "band",
     "channel": "channel",
-    "채널": "channel",
     "채널": "channel",
 }
 
@@ -211,7 +201,7 @@ def parse_netsh_wlan_output(raw_output: str) -> WirelessInfo:
     info.signal_percent = int(signal_match.group(1)) if signal_match else None
 
     if not any([info.interface_name, info.state, info.ssid, info.bssid, info.channel, info.receive_rate_mbps]):
-        info.parser_message = "Wi-Fi 정보를 파싱하지 못했습니다. 원본 출력으로 확인해 주세요."
+        info.parser_message = "Wi-Fi 정보를 파싱하지 못했습니다. 원본 출력을 확인해 주세요."
     return info
 
 
@@ -224,7 +214,11 @@ def parse_arp_table(raw_output: str) -> list[dict[str, str]]:
         if not stripped:
             continue
 
-        interface_match = re.match(r"^\s*(?:Interface|인터페이스)\s*:\s*(?P<ip>(?:\d{1,3}\.){3}\d{1,3})", line)
+        interface_match = re.match(
+            r"^\s*(?:Interface|인터페이스)\s*:\s*(?P<ip>(?:\d{1,3}\.){3}\d{1,3})",
+            line,
+            re.IGNORECASE,
+        )
         if interface_match:
             current_interface = interface_match.group("ip")
             continue
@@ -271,7 +265,11 @@ def parse_netsh_wlan_networks_output(raw_output: str) -> list[NearbyAccessPoint]
         if not stripped:
             continue
 
-        interface_match = re.match(r"^\s*(?:Interface name|인터페이스 이름)\s*:\s*(.+)$", line, re.IGNORECASE)
+        interface_match = re.match(
+            r"^\s*(?:Interface name|인터페이스 이름)\s*:\s*(.+)$",
+            line,
+            re.IGNORECASE,
+        )
         if interface_match:
             finalize_ap()
             current_interface = interface_match.group(1).strip()
@@ -326,16 +324,6 @@ def parse_netsh_wlan_networks_output(raw_output: str) -> list[NearbyAccessPoint]
             current_ap.band = text_value
         elif field_name == "channel":
             current_ap.channel = text_value
-        elif normalized_label == "연결되는스테이션":
-            match = re.search(r"\d+", text_value)
-            current_ap.connected_stations = int(match.group(0)) if match else None
-        elif normalized_label == "채널사용률":
-            percent_match = re.search(r"\((\d+)\s*%\)", text_value)
-            if percent_match:
-                current_ap.channel_utilization_percent = int(percent_match.group(1))
-            else:
-                match = re.search(r"\d+", text_value)
-                current_ap.channel_utilization_percent = int(match.group(0)) if match else None
         elif normalized_label in {"connectedstations", "연결된스테이션"}:
             match = re.search(r"\d+", text_value)
             current_ap.connected_stations = int(match.group(0)) if match else None
@@ -391,7 +379,8 @@ def parse_trace_hop_line(line: str) -> TraceHop | None:
     address = ""
     status = "정상"
 
-    if any(marker in endpoint.lower() for marker in ("request timed out", "요청 시간이 만료", "transmit failed", "일반 실패")):
+    lower_endpoint = endpoint.lower()
+    if any(marker in lower_endpoint for marker in ("request timed out", "transmit failed")) or "요청 시간이 만료" in endpoint:
         status = "시간 초과"
     elif not endpoint and "*" in (probe_1, probe_2, probe_3):
         status = "시간 초과"

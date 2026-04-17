@@ -72,11 +72,9 @@ class SettingsTab(QWidget):
         path_layout = QVBoxLayout(path_group)
         self.config_dir_label = QLabel()
         self.ip_profile_label = QLabel()
-        self.wifi_profile_label = QLabel()
         self.log_dir_label = QLabel()
         path_layout.addWidget(self.config_dir_label)
         path_layout.addWidget(self.ip_profile_label)
-        path_layout.addWidget(self.wifi_profile_label)
         path_layout.addWidget(self.log_dir_label)
 
         folder_button_row = QHBoxLayout()
@@ -129,7 +127,6 @@ class SettingsTab(QWidget):
 
         self.config_dir_label.setText(f"Config 폴더: {self.state.paths.config_dir}")
         self.ip_profile_label.setText(f"IP 프로필: {self.state.paths.ip_profiles}")
-        self.wifi_profile_label.setText(f"Wi-Fi 프로필: {self.state.paths.wifi_profiles}")
         self.log_dir_label.setText(f"로그 폴더: {self.state.paths.logs_dir}")
         self.version_label.setText(__version__)
         self.set_update_status("업데이트는 프로그램 내부에 고정된 공식 배포 채널을 사용합니다.")

@@ -5,7 +5,6 @@ from app.services.ping_service import PingService
 from app.services.powershell_service import PowerShellService
 from app.services.tcp_check_service import TcpCheckService
 from app.services.trace_service import TraceService
-from app.services.wifi_profile_service import WifiProfileService
 from app.services.wireless_service import WirelessService
 
 __all__ = [
@@ -16,6 +15,5 @@ __all__ = [
     "PowerShellService",
     "TcpCheckService",
     "TraceService",
-    "WifiProfileService",
     "WirelessService",
 ]

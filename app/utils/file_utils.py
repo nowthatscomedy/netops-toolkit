@@ -23,7 +23,6 @@ class AppPaths:
     app_config: Path
     ip_profiles: Path
     vendor_presets: Path
-    wifi_profiles: Path
     public_iperf_cache: Path
     oui_cache: Path
     app_log: Path
@@ -96,7 +95,6 @@ def build_app_paths(root_dir: Path | None = None) -> AppPaths:
         app_config=config_dir / "app_config.json",
         ip_profiles=config_dir / "ip_profiles.json",
         vendor_presets=config_dir / "vendor_presets.json",
-        wifi_profiles=config_dir / "wifi_profiles.json",
         public_iperf_cache=config_dir / "public_iperf_servers_cache.json",
         oui_cache=config_dir / "oui_cache.json",
         app_log=logs_dir / "app.log",
@@ -175,50 +173,6 @@ def default_vendor_presets() -> list[dict[str, Any]]:
     return []
 
 
-def default_wifi_profiles() -> list[dict[str, Any]]:
-    return [
-        {
-            "name": "Default-like",
-            "adapter_patterns": ["Wi-Fi", "Wireless", "802.11"],
-            "settings": [
-                {
-                    "display_name": "Roaming Aggressiveness",
-                    "registry_keyword": "*RoamingAggressiveness",
-                    "value": "3. Medium",
-                },
-                {
-                    "display_name": "Transmit Power",
-                    "registry_keyword": "*TransmitPower",
-                    "value": "5. Highest",
-                },
-            ],
-            "notes": "Balanced baseline. Properties can vary by vendor and driver package.",
-        },
-        {
-            "name": "Max performance test",
-            "adapter_patterns": ["Wi-Fi", "Wireless", "802.11"],
-            "settings": [
-                {
-                    "display_name": "Roaming Aggressiveness",
-                    "registry_keyword": "*RoamingAggressiveness",
-                    "value": "1. Lowest",
-                },
-                {
-                    "display_name": "Transmit Power",
-                    "registry_keyword": "*TransmitPower",
-                    "value": "5. Highest",
-                },
-                {
-                    "display_name": "MIMO Power Save Mode",
-                    "registry_keyword": "MIMOPowerSaveMode",
-                    "value": "No SMPS",
-                },
-            ],
-            "notes": "Use for temporary throughput testing. Some property names may differ per adapter.",
-        },
-    ]
-
-
 def ensure_runtime_files(paths: AppPaths) -> None:
     for directory in (paths.config_dir, paths.logs_dir, paths.exports_dir):
         directory.mkdir(parents=True, exist_ok=True)
@@ -227,7 +181,6 @@ def ensure_runtime_files(paths: AppPaths) -> None:
         paths.app_config: (default_app_config(), paths.root / "config" / "app_config.json"),
         paths.ip_profiles: (default_ip_profiles(), paths.root / "config" / "ip_profiles.json"),
         paths.vendor_presets: (default_vendor_presets(), paths.root / "config" / "vendor_presets.json"),
-        paths.wifi_profiles: (default_wifi_profiles(), paths.root / "config" / "wifi_profiles.json"),
     }
     for file_path, (default_value, source_path) in defaults.items():
         if not file_path.exists():
