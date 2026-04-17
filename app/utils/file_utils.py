@@ -123,6 +123,7 @@ def default_update_config() -> dict[str, Any]:
         "installer_asset_pattern": DEFAULT_UPDATE_ASSET_PATTERN,
         "check_on_startup": True,
         "include_prerelease": False,
+        "release_channel": "stable",
     }
 
 
@@ -130,7 +131,14 @@ def normalize_update_config(update_config: Any) -> dict[str, Any]:
     config = default_update_config()
     if isinstance(update_config, dict):
         config["check_on_startup"] = bool(update_config.get("check_on_startup", config["check_on_startup"]))
-        config["include_prerelease"] = bool(update_config.get("include_prerelease", config["include_prerelease"]))
+        channel = str(update_config.get("release_channel", "") or "").strip().lower()
+        if channel in {"stable", "prerelease"}:
+            config["release_channel"] = channel
+            config["include_prerelease"] = channel == "prerelease"
+        else:
+            # Migrate older configs to the safer stable channel by default.
+            config["release_channel"] = "stable"
+            config["include_prerelease"] = False
     return config
 
 

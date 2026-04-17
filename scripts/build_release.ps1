@@ -6,6 +6,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Format-PyInstallerBundleArg {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    $normalizedSource = $Source -replace "\\", "/"
+    $normalizedDestination = $Destination -replace "\\", "/"
+    return "$normalizedSource`:$normalizedDestination"
+}
+
 function Resolve-IsccPath {
     $candidates = @(
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
@@ -67,9 +80,9 @@ $pyInstallerArgs = @(
     "--windowed",
     "--name", "NetOpsToolkit",
     "--icon", (Join-Path $repoRoot "assets\icons\netops_toolkit.ico"),
-    "--add-data", "$stagingConfigDir;config",
-    "--add-data", "$stagingLogsDir;logs",
-    "--add-data", (Join-Path $repoRoot "assets\icons") + ";assets\\icons",
+    "--add-data", (Format-PyInstallerBundleArg -Source $stagingConfigDir -Destination "config"),
+    "--add-data", (Format-PyInstallerBundleArg -Source $stagingLogsDir -Destination "logs"),
+    "--add-data", (Format-PyInstallerBundleArg -Source (Join-Path $repoRoot "assets\icons") -Destination "assets/icons"),
     "main.py"
 )
 
@@ -83,7 +96,7 @@ $optionalBinaries = @(
 foreach ($binaryName in $optionalBinaries) {
     $binaryPath = Join-Path $repoRoot $binaryName
     if (Test-Path $binaryPath) {
-        $pyInstallerArgs += @("--add-binary", "$binaryPath;.")
+        $pyInstallerArgs += @("--add-binary", (Format-PyInstallerBundleArg -Source $binaryPath -Destination "."))
     }
 }
 

@@ -70,10 +70,20 @@ class AppState(QObject):
     def reload_config_files(self) -> None:
         loaded_config = load_json(self.paths.app_config, {})
         base_config = default_app_config()
+        should_save_app_config = False
         if isinstance(loaded_config, dict):
             base_config.update({key: value for key, value in loaded_config.items() if key != "update"})
-            base_config["update"] = normalize_update_config(loaded_config.get("update", {}))
+            normalized_update = normalize_update_config(loaded_config.get("update", {}))
+            base_config["update"] = normalized_update
+
+            loaded_update = loaded_config.get("update", {})
+            if not isinstance(loaded_update, dict) or loaded_update != normalized_update:
+                should_save_app_config = True
+        else:
+            should_save_app_config = True
         self.app_config = base_config
+        if should_save_app_config:
+            save_json(self.paths.app_config, self.app_config)
         profiles = [IPProfile.from_dict(item) for item in load_json(self.paths.ip_profiles, [])]
         legacy_presets = load_json(self.paths.vendor_presets, [])
         migrated_legacy = bool(legacy_presets)
@@ -92,6 +102,8 @@ class AppState(QObject):
         ]
         self.config_reloaded.emit()
         if hasattr(self, "logger"):
+            if should_save_app_config:
+                self.logger.info("Normalized app_config.json update channel settings.")
             if migrated_legacy:
                 self.logger.info("Migrated legacy vendor presets into ip_profiles.json")
             self.logger.info("Configuration reloaded from disk.")

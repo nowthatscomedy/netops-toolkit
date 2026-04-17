@@ -100,6 +100,7 @@ class SettingsTab(QWidget):
         config = default_update_config()
         config["check_on_startup"] = self.check_on_startup_check.isChecked()
         config["include_prerelease"] = self.include_prerelease_check.isChecked()
+        config["release_channel"] = "prerelease" if config["include_prerelease"] else "stable"
         return config
 
     def save_update_settings(self, show_feedback: bool = False) -> dict:
