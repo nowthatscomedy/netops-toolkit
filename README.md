@@ -139,6 +139,31 @@ After packaging:
 - Place `iperf3.exe` next to the executable if you want iperf3 integration.
 - Keep the `config` folder writable so profiles and presets can be edited.
 
+### Recommended installer build
+
+This repository now includes a repeatable Windows installer pipeline:
+
+- [scripts/build_release.ps1](/C:/Users/PC/Desktop/python/netops-toolkit/scripts/build_release.ps1)
+  - Builds a PyInstaller bundle
+  - Stages only sample config files so local `app_config.json` is not leaked
+  - Builds an Inno Setup installer
+- [installer/netops-toolkit.iss](/C:/Users/PC/Desktop/python/netops-toolkit/installer/netops-toolkit.iss)
+  - Creates `NetOpsToolkit-setup-x.y.z.exe`
+- [scripts/publish_release.ps1](/C:/Users/PC/Desktop/python/netops-toolkit/scripts/publish_release.ps1)
+  - Creates or updates a GitHub Release and uploads the installer asset
+- [.github/workflows/release.yml](/C:/Users/PC/Desktop/python/netops-toolkit/.github/workflows/release.yml)
+  - On `v*` tags, builds the installer and publishes it to GitHub Releases
+
+Local build example:
+
+```powershell
+pip install -r requirements.txt
+pip install pyinstaller
+
+# Inno Setup 6 must be installed on the machine
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.0 -Clean
+```
+
 ## GitHub Updates
 
 The app can check a public GitHub repository's Releases feed and offer an update when a newer release exists.
@@ -163,6 +188,21 @@ What you need to prepare on GitHub:
 - Publish GitHub Releases from version tags.
 - Upload the packaged installer asset to each release.
 - In the app Settings tab, set `owner/repo` and the installer filename regex.
+
+Recommended release flow for this repository:
+
+1. Update [app/version.py](/C:/Users/PC/Desktop/python/netops-toolkit/app/version.py) to the target version.
+2. Commit and push the change.
+3. Create and push a tag such as `v1.0.1`.
+4. GitHub Actions builds `NetOpsToolkit-setup-1.0.1.exe`.
+5. The workflow uploads the installer to the GitHub Release for that tag.
+
+Tag push example:
+
+```powershell
+git tag v1.0.1
+git push origin v1.0.1
+```
 
 Current limitations:
 
