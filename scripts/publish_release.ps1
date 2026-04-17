@@ -78,9 +78,13 @@ if ($existingAsset) {
     Invoke-GitHubRest -Method DELETE -Uri "https://api.github.com/repos/$Repository/releases/assets/$($existingAsset.id)" | Out-Null
 }
 
-$uploadUrl = ($release.upload_url -replace "\{.*$", "")
 $escapedAssetName = [System.Uri]::EscapeDataString($assetName)
-$uploadUri = "$uploadUrl?name=$escapedAssetName"
+
+if (-not $release.id) {
+    throw "GitHub release id was not returned. Cannot upload release asset."
+}
+
+$uploadUri = "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$escapedAssetName"
 
 Invoke-RestMethod `
     -Method POST `
