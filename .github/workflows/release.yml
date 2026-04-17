@@ -72,16 +72,11 @@ jobs:
         shell: powershell
         run: |
           $tagVersion = "${{ steps.meta.outputs.version }}"
-          $appVersion = @'
-from pathlib import Path
-import re
-
-text = Path("app/version.py").read_text(encoding="utf-8")
-match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
-if not match:
-    raise SystemExit("Could not find __version__ in app/version.py")
-print(match.group(1))
-'@ | python -
+          $versionFile = Get-Content -Path "app/version.py" -Raw
+          if ($versionFile -notmatch '__version__\s*=\s*"([^"]+)"') {
+            throw "Could not find __version__ in app/version.py"
+          }
+          $appVersion = $Matches[1]
 
           if ($appVersion.Trim() -ne $tagVersion) {
             throw "Tag version ($tagVersion) does not match app/version.py version ($appVersion)."
