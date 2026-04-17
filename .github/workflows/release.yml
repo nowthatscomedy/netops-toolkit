@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag name (example: v1.0.0)"
+        required: true
+        default: "v1.0.0"
+      release_name:
+        description: "Optional release title"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -15,6 +25,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Resolve Release Metadata
+        id: meta
+        shell: powershell
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tagName = "${{ inputs.tag_name }}".Trim()
+            $releaseName = "${{ inputs.release_name }}".Trim()
+          }
+          else {
+            $tagName = "${{ github.ref_name }}".Trim()
+            $releaseName = ""
+          }
+
+          if ([string]::IsNullOrWhiteSpace($tagName)) {
+            throw "A tag name is required."
+          }
+
+          if (-not $tagName.StartsWith("v")) {
+            throw "The tag name must start with 'v'. Example: v1.0.0"
+          }
+
+          $version = $tagName.TrimStart("v")
+          if ([string]::IsNullOrWhiteSpace($releaseName)) {
+            $releaseName = "NetOps Toolkit $tagName"
+          }
+
+          "tag_name=$tagName" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release_name=$releaseName" >> $env:GITHUB_OUTPUT
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -31,7 +71,7 @@ jobs:
       - name: Verify Tag Matches App Version
         shell: powershell
         run: |
-          $tagVersion = "${{ github.ref_name }}".TrimStart("v")
+          $tagVersion = "${{ steps.meta.outputs.version }}"
           $appVersion = @'
 from pathlib import Path
 import re
@@ -51,12 +91,12 @@ print(match.group(1))
         shell: powershell
         run: |
           Set-ExecutionPolicy -Scope Process Bypass
-          .\scripts\build_release.ps1 -Version "${{ github.ref_name }}" -Clean
+          .\scripts\build_release.ps1 -Version "${{ steps.meta.outputs.tag_name }}" -Clean
 
       - name: Upload Workflow Artifact
         uses: actions/upload-artifact@v6
         with:
-          name: NetOpsToolkit-installer-${{ github.ref_name }}
+          name: NetOpsToolkit-installer-${{ steps.meta.outputs.tag_name }}
           path: dist/release/NetOpsToolkit-setup-*.exe
           if-no-files-found: error
 
@@ -69,6 +109,6 @@ print(match.group(1))
           $asset = Get-ChildItem -Path dist/release/NetOpsToolkit-setup-*.exe | Select-Object -First 1 -ExpandProperty FullName
           .\scripts\publish_release.ps1 `
             -Repository "${{ github.repository }}" `
-            -TagName "${{ github.ref_name }}" `
-            -ReleaseName "NetOps Toolkit ${{ github.ref_name }}" `
+            -TagName "${{ steps.meta.outputs.tag_name }}" `
+            -ReleaseName "${{ steps.meta.outputs.release_name }}" `
             -AssetPath $asset
