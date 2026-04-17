@@ -161,7 +161,7 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 # Inno Setup 6 must be installed on the machine
-powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.0 -Clean
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.1 -Clean
 ```
 
 ## GitHub Updates
