@@ -29,7 +29,7 @@ $apiHeaders = @{
 function Invoke-GitHubRest {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet("GET", "POST", "DELETE")]
+        [ValidateSet("GET", "POST", "PATCH", "DELETE")]
         [string]$Method,
         [Parameter(Mandatory = $true)]
         [string]$Uri,
@@ -66,7 +66,7 @@ if (-not $release) {
     $release = Invoke-GitHubRest -Method POST -Uri "https://api.github.com/repos/$Repository/releases" -Body @{
         tag_name              = $TagName
         name                  = $ReleaseName
-        draft                 = $false
+        draft                 = $true
         prerelease            = $false
         generate_release_notes = $true
     }
@@ -88,5 +88,15 @@ Invoke-RestMethod `
     -Headers $apiHeaders `
     -InFile $AssetPath `
     -ContentType "application/octet-stream" | Out-Null
+
+if ($release.draft) {
+    $release = Invoke-GitHubRest -Method PATCH -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)" -Body @{
+        tag_name   = $TagName
+        name       = $ReleaseName
+        draft      = $false
+        prerelease = $false
+    }
+    Write-Host "Published release: $TagName"
+}
 
 Write-Host "Uploaded release asset: $assetName"
