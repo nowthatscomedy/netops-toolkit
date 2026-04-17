@@ -6,8 +6,8 @@ from datetime import datetime
 from threading import Event
 from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFontDatabase
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from app.app_state import AppState
 from app.models.result_models import OperationResult, PingResult, TcpCheckResult
-from app.utils.file_utils import timestamped_export_path
+from app.utils.file_utils import open_in_explorer, timestamped_export_path
 from app.utils.threading_utils import FunctionWorker
 from app.utils.validators import ValidationError, parse_positive_int, validate_host_input
 
@@ -82,6 +82,7 @@ class DiagnosticsTab(QWidget):
         self.tcp_row_map: dict[tuple[str, str, int], int] = {}
         self.ping_log_lines: dict[tuple[str, str], list[str]] = {}
         self.tcp_log_lines: dict[tuple[str, str, int], list[str]] = {}
+        self._iperf_available = False
 
         self.fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self._build_ui()
@@ -336,6 +337,18 @@ class DiagnosticsTab(QWidget):
         button_row.addWidget(self.iperf_cancel_button)
         button_row.addStretch(1)
 
+        self.iperf_status_label = QLabel()
+        self.iperf_status_label.setWordWrap(True)
+
+        help_button_row = QHBoxLayout()
+        self.iperf_refresh_button = QPushButton("상태 새로고침")
+        self.iperf_open_folder_button = QPushButton("프로그램 폴더 열기")
+        self.iperf_download_button = QPushButton("공식 다운로드")
+        help_button_row.addWidget(self.iperf_refresh_button)
+        help_button_row.addWidget(self.iperf_open_folder_button)
+        help_button_row.addWidget(self.iperf_download_button)
+        help_button_row.addStretch(1)
+
         form.addRow("모드", self.iperf_mode_combo)
         form.addRow("서버", self.iperf_server_edit)
         form.addRow("포트", self.iperf_port_edit)
@@ -343,6 +356,8 @@ class DiagnosticsTab(QWidget):
         form.addRow("지속 시간(초)", self.iperf_duration_edit)
         form.addRow("", self.iperf_reverse_check)
         form.addRow("", button_row)
+        form.addRow("실행 파일", self.iperf_status_label)
+        form.addRow("", help_button_row)
         layout.addWidget(group)
 
         self.iperf_output = self._output()
@@ -351,7 +366,11 @@ class DiagnosticsTab(QWidget):
         self.iperf_mode_combo.currentIndexChanged.connect(self._update_iperf_mode_state)
         self.iperf_run_button.clicked.connect(self.run_iperf_test)
         self.iperf_cancel_button.clicked.connect(self.cancel_iperf_test)
+        self.iperf_refresh_button.clicked.connect(self.refresh_iperf_availability)
+        self.iperf_open_folder_button.clicked.connect(lambda: open_in_explorer(self.state.paths.root))
+        self.iperf_download_button.clicked.connect(self.open_iperf_download_page)
         self._update_iperf_mode_state()
+        self.refresh_iperf_availability()
         return page
 
     def _setup_table(self, table: QTableWidget) -> None:
@@ -799,7 +818,41 @@ class DiagnosticsTab(QWidget):
             "예: 192.168.0.10" if is_client else "서버 모드에서는 사용하지 않습니다."
         )
 
+    def refresh_iperf_availability(self) -> None:
+        executable_path, source = self.state.iperf_service.executable_details()
+        self._iperf_available = executable_path is not None
+
+        if self._iperf_available:
+            source_text = "프로그램 폴더" if source == "program folder" else "시스템 PATH"
+            self.iperf_status_label.setText(
+                f"사용 가능 ({source_text})\n{executable_path}"
+            )
+            self.iperf_status_label.setStyleSheet("color:#1b5e20;")
+        else:
+            self.iperf_status_label.setText(
+                "현재 iperf3를 찾지 못했습니다.\n"
+                "1) 프로그램 폴더에 iperf3.exe를 복사하거나\n"
+                "2) 시스템 PATH에 iperf3를 설치한 뒤\n"
+                "3) '상태 새로고침'을 눌러 주세요."
+            )
+            self.iperf_status_label.setStyleSheet("color:#8d6e00;")
+
+        self._set_iperf_running(self.iperf_cancel_button.isEnabled())
+
+    def open_iperf_download_page(self) -> None:
+        QDesktopServices.openUrl(QUrl(self.state.iperf_service.DOWNLOAD_URL))
+
     def run_iperf_test(self) -> None:
+        self.refresh_iperf_availability()
+        if not self._iperf_available:
+            QMessageBox.information(
+                self,
+                "iperf3 설치 필요",
+                "iperf3 실행 파일을 찾지 못했습니다.\n\n"
+                "프로그램 폴더에 iperf3.exe를 넣거나 시스템 PATH에 iperf3를 설치해 주세요.",
+            )
+            return
+
         mode = str(self.iperf_mode_combo.currentData())
         try:
             port = self._positive_int_or_default(self.iperf_port_edit, "iperf 포트", 5201, minimum=1, maximum=65535)
@@ -851,7 +904,7 @@ class DiagnosticsTab(QWidget):
             self.iperf_output.setPlainText(result.message + ("\n\n" + result.details if result.details else ""))
 
     def _set_iperf_running(self, running: bool) -> None:
-        self.iperf_run_button.setEnabled(not running)
+        self.iperf_run_button.setEnabled((not running) and self._iperf_available)
         self.iperf_cancel_button.setEnabled(running)
 
     def cancel_iperf_test(self) -> None:

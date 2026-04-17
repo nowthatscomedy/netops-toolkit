@@ -9,15 +9,26 @@ from app.utils.process_utils import run_streaming_command
 
 
 class IperfService:
+    DOWNLOAD_URL = "https://github.com/esnet/iperf/releases"
+
     def __init__(self, paths: AppPaths, logger: logging.Logger) -> None:
         self.paths = paths
         self.logger = logger
 
-    def executable_path(self) -> str | None:
+    def executable_details(self) -> tuple[str | None, str]:
         bundled = self.paths.root / "iperf3.exe"
         if bundled.exists():
-            return str(bundled)
-        return shutil.which("iperf3.exe") or shutil.which("iperf3")
+            return str(bundled), "program folder"
+
+        system_path = shutil.which("iperf3.exe") or shutil.which("iperf3")
+        if system_path:
+            return system_path, "system PATH"
+
+        return None, ""
+
+    def executable_path(self) -> str | None:
+        path, _source = self.executable_details()
+        return path
 
     def is_available(self) -> bool:
         return self.executable_path() is not None
@@ -38,7 +49,11 @@ class IperfService:
             return OperationResult(
                 False,
                 "iperf3 실행 파일을 찾지 못했습니다.",
-                f"{self.paths.root} 폴더 또는 시스템 PATH에서 iperf3 / iperf3.exe를 찾을 수 있어야 합니다.",
+                (
+                    f"{self.paths.root} 폴더에 iperf3.exe를 넣거나 시스템 PATH에서 "
+                    "iperf3 / iperf3.exe를 찾을 수 있어야 합니다.\n"
+                    f"다운로드: {self.DOWNLOAD_URL}"
+                ),
             )
 
         mode = mode.strip().lower()
