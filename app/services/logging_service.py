@@ -22,18 +22,32 @@ def configure_logging(log_path: Path, callback: Callable[[str], None] | None = N
     logger = logging.getLogger("netops_toolkit")
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    logger.handlers.clear()
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
 
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%Y-%m-%d %H:%M:%S")
-
-    file_handler = RotatingFileHandler(log_path, maxBytes=1_048_576, backupCount=3, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
 
     if callback:
         callback_handler = CallbackLogHandler(callback)
         callback_handler.setFormatter(formatter)
         logger.addHandler(callback_handler)
 
-    logger.info("Logging initialized: %s", log_path)
+    file_logging_ready = False
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(log_path, maxBytes=1_048_576, backupCount=3, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+        file_logging_ready = True
+    except OSError as exc:
+        logger.warning("File logging unavailable at %s: %s", log_path, exc)
+
+    if not logger.handlers:
+        logger.addHandler(logging.NullHandler())
+
+    if file_logging_ready:
+        logger.info("Logging initialized: %s", log_path)
+    else:
+        logger.info("Logging initialized without file output.")
     return logger

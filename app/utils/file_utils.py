@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ from typing import Any
 @dataclass(slots=True)
 class AppPaths:
     root: Path
+    data_root: Path
     config_dir: Path
     logs_dir: Path
     exports_dir: Path
@@ -28,13 +30,57 @@ def detect_root_path() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def default_data_root() -> Path:
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata) / "NetOps Toolkit"
+    return Path.home() / "AppData" / "Local" / "NetOps Toolkit"
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _is_protected_install_root(root: Path) -> bool:
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        base_dir = os.environ.get(env_name)
+        if base_dir and _is_relative_to(root, Path(base_dir)):
+            return True
+    return False
+
+
+def _is_writable_directory(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".netops_write_test_{os.getpid()}"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def detect_data_root(root: Path) -> Path:
+    if _is_protected_install_root(root):
+        return default_data_root()
+    if _is_writable_directory(root):
+        return root
+    return default_data_root()
+
+
 def build_app_paths(root_dir: Path | None = None) -> AppPaths:
     root = Path(root_dir) if root_dir else detect_root_path()
-    config_dir = root / "config"
-    logs_dir = root / "logs"
+    data_root = detect_data_root(root)
+    config_dir = data_root / "config"
+    logs_dir = data_root / "logs"
     exports_dir = logs_dir / "exports"
     return AppPaths(
         root=root,
+        data_root=data_root,
         config_dir=config_dir,
         logs_dir=logs_dir,
         exports_dir=exports_dir,
@@ -147,13 +193,19 @@ def ensure_runtime_files(paths: AppPaths) -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
     defaults = {
-        paths.app_config: default_app_config(),
-        paths.ip_profiles: default_ip_profiles(),
-        paths.vendor_presets: default_vendor_presets(),
-        paths.wifi_profiles: default_wifi_profiles(),
+        paths.app_config: (default_app_config(), paths.root / "config" / "app_config.json"),
+        paths.ip_profiles: (default_ip_profiles(), paths.root / "config" / "ip_profiles.json"),
+        paths.vendor_presets: (default_vendor_presets(), paths.root / "config" / "vendor_presets.json"),
+        paths.wifi_profiles: (default_wifi_profiles(), paths.root / "config" / "wifi_profiles.json"),
     }
-    for file_path, default_value in defaults.items():
+    for file_path, (default_value, source_path) in defaults.items():
         if not file_path.exists():
+            if source_path.exists():
+                try:
+                    shutil.copyfile(source_path, file_path)
+                    continue
+                except OSError:
+                    pass
             save_json(file_path, default_value)
 
     gitkeep = paths.logs_dir / ".gitkeep"
@@ -161,7 +213,7 @@ def ensure_runtime_files(paths: AppPaths) -> None:
         gitkeep.write_text("", encoding="utf-8")
 
     if not paths.app_log.exists():
-        paths.app_log.write_text("", encoding="utf-8")
+        paths.app_log.touch()
 
 
 def load_json(file_path: Path, default: Any) -> Any:

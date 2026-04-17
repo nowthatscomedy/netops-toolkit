@@ -138,6 +138,7 @@ After packaging:
 
 - Place `iperf3.exe` next to the executable if you want iperf3 integration.
 - Keep the `config` folder writable so profiles and presets can be edited.
+- If the app is installed under `C:\Program Files`, writable data is stored under `%LOCALAPPDATA%\NetOps Toolkit`.
 
 ### Recommended installer build
 
@@ -161,14 +162,14 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 # Inno Setup 6 must be installed on the machine
-powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.1 -Clean
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.2 -Clean
 ```
 
 ## GitHub Updates
 
 The app can check a public GitHub repository's Releases feed and offer an update when a newer release exists.
 
-- The updater checks the latest release tag such as `v1.0.1`.
+- The updater checks the latest release tag such as `v1.0.2`.
 - It looks for a release asset whose filename matches the configured regex.
 - It downloads the installer only after the user confirms.
 - It verifies SHA-256 before launching the installer.
@@ -178,9 +179,9 @@ The app can check a public GitHub repository's Releases feed and offer an update
 
 Recommended release structure:
 
-- Git tag: `v1.0.1`
-- Release asset: `NetOpsToolkit-setup-1.0.1.exe`
-- Optional fallback checksum asset: `NetOpsToolkit-setup-1.0.1.exe.sha256`
+- Git tag: `v1.0.2`
+- Release asset: `NetOpsToolkit-setup-1.0.2.exe`
+- Optional fallback checksum asset: `NetOpsToolkit-setup-1.0.2.exe.sha256`
 
 What you need to prepare on GitHub:
 
@@ -193,15 +194,15 @@ Recommended release flow for this repository:
 
 1. Update [app/version.py](/C:/Users/PC/Desktop/python/netops-toolkit/app/version.py) to the target version.
 2. Commit and push the change.
-3. Create and push a tag such as `v1.0.1`.
-4. GitHub Actions builds `NetOpsToolkit-setup-1.0.1.exe`.
+3. Create and push a tag such as `v1.0.2`.
+4. GitHub Actions builds `NetOpsToolkit-setup-1.0.2.exe`.
 5. The workflow uploads the installer to the GitHub Release for that tag.
 
 Tag push example:
 
 ```powershell
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 Current limitations:
