@@ -31,8 +31,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.app_state import AppState
+from app.models.network_models import PublicIperfServer
 from app.models.result_models import OperationResult, PingResult, TcpCheckResult
-from app.utils.file_utils import open_in_explorer, timestamped_export_path
+from app.utils.file_utils import timestamped_export_path
 from app.utils.threading_utils import FunctionWorker
 from app.utils.validators import ValidationError, parse_positive_int, validate_host_input
 
@@ -86,6 +87,9 @@ class DiagnosticsTab(QWidget):
         self._iperf_available = False
         self._iperf_manage_available = False
         self._iperf_manage_enabled = False
+        self._public_iperf_refresh_in_progress = False
+        self._preferred_public_iperf_key = ""
+        self.public_iperf_servers: list[PublicIperfServer] = []
 
         self.fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self._build_ui()
@@ -322,6 +326,18 @@ class DiagnosticsTab(QWidget):
         self.iperf_mode_combo = QComboBox()
         self.iperf_mode_combo.addItem("클라이언트", "client")
         self.iperf_mode_combo.addItem("서버", "server")
+        public_row_widget = QWidget()
+        public_row = QHBoxLayout(public_row_widget)
+        public_row.setContentsMargins(0, 0, 0, 0)
+        self.iperf_use_public_server_check = QCheckBox("공개 서버 사용")
+        self.iperf_public_refresh_button = QPushButton("목록 갱신")
+        public_row.addWidget(self.iperf_use_public_server_check)
+        public_row.addWidget(self.iperf_public_refresh_button)
+        public_row.addStretch(1)
+        self.iperf_public_server_combo = QComboBox()
+        self.iperf_public_server_combo.addItem("공개 서버 목록 확인 중...", "")
+        self.iperf_public_info_label = QLabel("인터넷 연결 시 공개 iperf 서버 목록을 자동 갱신합니다.")
+        self.iperf_public_info_label.setWordWrap(True)
         self.iperf_server_edit = QLineEdit()
         self.iperf_server_edit.setPlaceholderText("예: 192.168.0.10")
         self.iperf_port_edit = QLineEdit()
@@ -346,15 +362,16 @@ class DiagnosticsTab(QWidget):
         help_button_row = QHBoxLayout()
         self.iperf_refresh_button = QPushButton("상태 새로고침")
         self.iperf_manage_button = QPushButton("winget 설치")
-        self.iperf_open_folder_button = QPushButton("프로그램 폴더 열기")
         self.iperf_download_button = QPushButton("패키지 페이지")
         help_button_row.addWidget(self.iperf_refresh_button)
         help_button_row.addWidget(self.iperf_manage_button)
-        help_button_row.addWidget(self.iperf_open_folder_button)
         help_button_row.addWidget(self.iperf_download_button)
         help_button_row.addStretch(1)
 
         form.addRow("모드", self.iperf_mode_combo)
+        form.addRow("공개 서버", public_row_widget)
+        form.addRow("", self.iperf_public_server_combo)
+        form.addRow("", self.iperf_public_info_label)
         form.addRow("서버", self.iperf_server_edit)
         form.addRow("포트", self.iperf_port_edit)
         form.addRow("스트림 수", self.iperf_streams_edit)
@@ -369,14 +386,18 @@ class DiagnosticsTab(QWidget):
         layout.addWidget(self.iperf_output, 1)
 
         self.iperf_mode_combo.currentIndexChanged.connect(self._update_iperf_mode_state)
+        self.iperf_use_public_server_check.toggled.connect(self._toggle_public_iperf_mode)
+        self.iperf_public_server_combo.currentIndexChanged.connect(self._handle_public_iperf_selection_changed)
+        self.iperf_public_refresh_button.clicked.connect(lambda: self.refresh_public_iperf_servers(force_refresh=True))
         self.iperf_run_button.clicked.connect(self.run_iperf_test)
         self.iperf_cancel_button.clicked.connect(self.cancel_iperf_test)
         self.iperf_refresh_button.clicked.connect(self.refresh_iperf_availability)
         self.iperf_manage_button.clicked.connect(self.manage_iperf_install)
-        self.iperf_open_folder_button.clicked.connect(lambda: open_in_explorer(self.state.paths.root))
         self.iperf_download_button.clicked.connect(self.open_iperf_download_page)
         self._update_iperf_mode_state()
         self.refresh_iperf_availability()
+        self._load_cached_public_iperf_servers()
+        self.refresh_public_iperf_servers(force_refresh=False)
         return page
 
     def _setup_table(self, table: QTableWidget) -> None:
@@ -814,14 +835,160 @@ class DiagnosticsTab(QWidget):
             error_title="도구 실행 실패",
         )
 
+    def _load_cached_public_iperf_servers(self) -> None:
+        cached = self.state.public_iperf_service.load_cached_servers()
+        payload = cached.payload if isinstance(cached.payload, dict) else {}
+        servers = payload.get("servers", [])
+        if isinstance(servers, list) and servers:
+            self._apply_public_iperf_servers(
+                servers,
+                fetched_at=str(payload.get("fetched_at", "") or ""),
+                from_cache=True,
+                stale=bool(payload.get("stale", False)),
+            )
+        else:
+            self._set_public_iperf_info("공개 iperf 서버 캐시가 없습니다. 인터넷 연결 시 자동으로 목록을 가져옵니다.")
+
+    def refresh_public_iperf_servers(self, force_refresh: bool = False) -> None:
+        if self._public_iperf_refresh_in_progress:
+            return
+        self._public_iperf_refresh_in_progress = True
+        self._set_public_iperf_info("공개 iperf 서버 목록을 갱신하는 중입니다...")
+        self._update_iperf_mode_state()
+        self._start_worker(
+            self.state.public_iperf_service.fetch_public_servers,
+            force_refresh=force_refresh,
+            on_result=self._finish_public_iperf_refresh,
+            on_finished=self._finish_public_iperf_refresh_state,
+            error_title="공개 iperf 서버 목록 갱신 실패",
+        )
+
+    def _finish_public_iperf_refresh(self, result: OperationResult) -> None:
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        servers = payload.get("servers", [])
+        if isinstance(servers, list) and servers:
+            self._apply_public_iperf_servers(
+                servers,
+                fetched_at=str(payload.get("fetched_at", "") or ""),
+                from_cache=bool(payload.get("from_cache", False)),
+                stale=bool(payload.get("stale", False)),
+            )
+        elif result.success:
+            self._set_public_iperf_info(result.message)
+        else:
+            self._set_public_iperf_info(result.message)
+            self.iperf_output.setPlainText(result.details or result.message)
+
+    def _finish_public_iperf_refresh_state(self) -> None:
+        self._public_iperf_refresh_in_progress = False
+        self._update_iperf_mode_state()
+
+    def _apply_public_iperf_servers(
+        self,
+        servers: list[PublicIperfServer],
+        fetched_at: str = "",
+        from_cache: bool = False,
+        stale: bool = False,
+    ) -> None:
+        previous_key = self._preferred_public_iperf_key or str(self.iperf_public_server_combo.currentData() or "")
+        self.public_iperf_servers = list(servers)
+
+        self.iperf_public_server_combo.blockSignals(True)
+        self.iperf_public_server_combo.clear()
+        for server in self.public_iperf_servers:
+            self.iperf_public_server_combo.addItem(server.display_name, server.key)
+        self.iperf_public_server_combo.blockSignals(False)
+
+        if previous_key:
+            index = self.iperf_public_server_combo.findData(previous_key)
+            if index >= 0:
+                self.iperf_public_server_combo.setCurrentIndex(index)
+                self._preferred_public_iperf_key = previous_key
+
+        if self.iperf_public_server_combo.currentIndex() < 0 and self.iperf_public_server_combo.count() > 0:
+            self.iperf_public_server_combo.setCurrentIndex(0)
+        selected = self._selected_public_iperf_server()
+        if selected:
+            self._preferred_public_iperf_key = selected.key
+
+        source_text = "캐시" if from_cache else "온라인"
+        stale_text = " (오래된 캐시)" if stale else ""
+        fetched_text = self._format_timestamp_text(fetched_at)
+        message = f"{source_text} 목록 {len(self.public_iperf_servers)}개"
+        if fetched_text:
+            message += f" | 기준 시각 {fetched_text}"
+        if stale_text:
+            message += stale_text
+        if selected and selected.summary_text:
+            message += f"\n선택: {selected.summary_text}"
+        self._set_public_iperf_info(message)
+        self._sync_public_iperf_target(overwrite_port=False)
+        self._update_iperf_mode_state()
+
+    def _selected_public_iperf_server(self) -> PublicIperfServer | None:
+        key = str(self.iperf_public_server_combo.currentData() or "")
+        if not key:
+            return None
+        for server in self.public_iperf_servers:
+            if server.key == key:
+                return server
+        return None
+
+    def _handle_public_iperf_selection_changed(self) -> None:
+        selected = self._selected_public_iperf_server()
+        if selected:
+            self._preferred_public_iperf_key = selected.key
+            summary = selected.summary_text or f"{selected.host}:{selected.port_spec}"
+            self._set_public_iperf_info(f"선택: {summary}")
+        self._sync_public_iperf_target(overwrite_port=True)
+
+    def _toggle_public_iperf_mode(self, checked: bool) -> None:
+        if checked:
+            self._sync_public_iperf_target(overwrite_port=False)
+        self._update_iperf_mode_state()
+
+    def _sync_public_iperf_target(self, overwrite_port: bool) -> None:
+        if self.iperf_mode_combo.currentData() != "client":
+            return
+        if not self.iperf_use_public_server_check.isChecked():
+            return
+        selected = self._selected_public_iperf_server()
+        if not selected:
+            return
+        self.iperf_server_edit.setText(selected.host)
+        current_port = self.iperf_port_edit.text().strip()
+        if overwrite_port or not current_port:
+            self.iperf_port_edit.setText(str(selected.default_port))
+
+    def _set_public_iperf_info(self, text: str) -> None:
+        self.iperf_public_info_label.setText(text)
+
+    def _format_timestamp_text(self, value: str) -> str:
+        if not value:
+            return ""
+        normalized = value.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return value
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
     def _update_iperf_mode_state(self) -> None:
         is_client = self.iperf_mode_combo.currentData() == "client"
-        self.iperf_server_edit.setEnabled(is_client)
+        use_public = is_client and self.iperf_use_public_server_check.isChecked() and bool(self.public_iperf_servers)
+        self.iperf_use_public_server_check.setEnabled(is_client)
+        self.iperf_public_server_combo.setEnabled(is_client and use_public and bool(self.public_iperf_servers))
+        self.iperf_public_refresh_button.setEnabled(is_client and not self._public_iperf_refresh_in_progress)
+        self.iperf_server_edit.setEnabled(is_client and not use_public)
         self.iperf_streams_edit.setEnabled(is_client)
         self.iperf_duration_edit.setEnabled(is_client)
         self.iperf_reverse_check.setEnabled(is_client)
         self.iperf_server_edit.setPlaceholderText(
-            "예: 192.168.0.10" if is_client else "서버 모드에서는 사용하지 않습니다."
+            "예: 192.168.0.10"
+            if is_client and not use_public
+            else "공개 서버 선택값이 자동으로 채워집니다."
+            if is_client
+            else "서버 모드에서는 사용하지 않습니다."
         )
 
     def refresh_iperf_availability(self) -> None:
@@ -950,6 +1117,8 @@ class DiagnosticsTab(QWidget):
             return
 
         mode = str(self.iperf_mode_combo.currentData())
+        if mode == "client":
+            self._sync_public_iperf_target(overwrite_port=False)
         try:
             port = self._positive_int_or_default(self.iperf_port_edit, "iperf 포트", 5201, minimum=1, maximum=65535)
             streams = (
@@ -968,7 +1137,10 @@ class DiagnosticsTab(QWidget):
 
         server = self.iperf_server_edit.text().strip()
         if mode == "client" and not server:
-            QMessageBox.warning(self, "입력 확인", "클라이언트 모드에서는 서버 주소를 입력해 주세요.")
+            if self.iperf_use_public_server_check.isChecked():
+                QMessageBox.warning(self, "입력 확인", "공개 서버 목록을 먼저 불러오거나 직접 서버 주소를 입력해 주세요.")
+            else:
+                QMessageBox.warning(self, "입력 확인", "클라이언트 모드에서는 서버 주소를 입력해 주세요.")
             return
 
         self.iperf_output.clear()
@@ -1023,6 +1195,11 @@ class DiagnosticsTab(QWidget):
         self.iperf_cancel_button.setEnabled(running)
         self.iperf_refresh_button.setEnabled(not running)
         self.iperf_manage_button.setEnabled((not running) and self._iperf_manage_enabled)
+        self.iperf_public_refresh_button.setEnabled(
+            (not running)
+            and (self.iperf_mode_combo.currentData() == "client")
+            and (not self._public_iperf_refresh_in_progress)
+        )
 
     def cancel_iperf_test(self) -> None:
         if self.iperf_cancel_event:
@@ -1126,6 +1303,8 @@ class DiagnosticsTab(QWidget):
             },
             "iperf": {
                 "mode": str(self.iperf_mode_combo.currentData() or ""),
+                "use_public_server": self.iperf_use_public_server_check.isChecked(),
+                "public_server_key": str(self.iperf_public_server_combo.currentData() or ""),
                 "server": self.iperf_server_edit.text().strip(),
                 "port": self.iperf_port_edit.text().strip(),
                 "streams": self.iperf_streams_edit.text().strip(),
@@ -1180,11 +1359,19 @@ class DiagnosticsTab(QWidget):
             index = self.iperf_mode_combo.findData(iperf_mode)
             if index >= 0:
                 self.iperf_mode_combo.setCurrentIndex(index)
+        public_server_key = str(iperf_state.get("public_server_key", "") or "")
+        self._preferred_public_iperf_key = public_server_key
+        if public_server_key:
+            index = self.iperf_public_server_combo.findData(public_server_key)
+            if index >= 0:
+                self.iperf_public_server_combo.setCurrentIndex(index)
+        self.iperf_use_public_server_check.setChecked(bool(iperf_state.get("use_public_server", False)))
         self.iperf_server_edit.setText(str(iperf_state.get("server", "") or ""))
         self.iperf_port_edit.setText(str(iperf_state.get("port", self.iperf_port_edit.text()) or ""))
         self.iperf_streams_edit.setText(str(iperf_state.get("streams", self.iperf_streams_edit.text()) or ""))
         self.iperf_duration_edit.setText(str(iperf_state.get("duration", self.iperf_duration_edit.text()) or ""))
         self.iperf_reverse_check.setChecked(bool(iperf_state.get("reverse", False)))
+        self._sync_public_iperf_target(overwrite_port=not bool(self.iperf_port_edit.text().strip()))
         self._update_iperf_mode_state()
 
     def _start_worker(

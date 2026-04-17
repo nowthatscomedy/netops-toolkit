@@ -24,6 +24,7 @@ class AppPaths:
     ip_profiles: Path
     vendor_presets: Path
     wifi_profiles: Path
+    public_iperf_cache: Path
     app_log: Path
 
 
@@ -91,6 +92,7 @@ def build_app_paths(root_dir: Path | None = None) -> AppPaths:
         ip_profiles=config_dir / "ip_profiles.json",
         vendor_presets=config_dir / "vendor_presets.json",
         wifi_profiles=config_dir / "wifi_profiles.json",
+        public_iperf_cache=config_dir / "public_iperf_servers_cache.json",
         app_log=logs_dir / "app.log",
     )
 

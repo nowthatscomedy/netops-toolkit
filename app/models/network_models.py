@@ -68,3 +68,77 @@ class WirelessInfo:
         if self.rssi:
             return f"{self.rssi} dBm"
         return "-"
+
+
+@dataclass(slots=True)
+class PublicIperfServer:
+    name: str
+    host: str
+    port_spec: str
+    default_port: int
+    region: str = ""
+    country_code: str = ""
+    site: str = ""
+    speed: str = ""
+    options: str = ""
+    source: str = ""
+    source_url: str = ""
+    notes: str = ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.host}|{self.port_spec}"
+
+    @property
+    def display_name(self) -> str:
+        location = self.site or self.name or self.host
+        country = f" ({self.country_code})" if self.country_code and self.country_code not in location else ""
+        return f"{location}{country} - {self.host}:{self.port_spec}"
+
+    @property
+    def summary_text(self) -> str:
+        parts: list[str] = []
+        if self.region:
+            parts.append(self.region)
+        if self.site and self.site != self.name:
+            parts.append(self.site)
+        if self.speed:
+            parts.append(f"속도 {self.speed}")
+        if self.options:
+            parts.append(f"옵션 {self.options}")
+        if self.notes:
+            parts.append(self.notes)
+        return " | ".join(part for part in parts if part)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "host": self.host,
+            "port_spec": self.port_spec,
+            "default_port": self.default_port,
+            "region": self.region,
+            "country_code": self.country_code,
+            "site": self.site,
+            "speed": self.speed,
+            "options": self.options,
+            "source": self.source,
+            "source_url": self.source_url,
+            "notes": self.notes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PublicIperfServer":
+        return cls(
+            name=str(data.get("name", "") or ""),
+            host=str(data.get("host", "") or ""),
+            port_spec=str(data.get("port_spec", "") or ""),
+            default_port=int(data.get("default_port", 5201) or 5201),
+            region=str(data.get("region", "") or ""),
+            country_code=str(data.get("country_code", "") or ""),
+            site=str(data.get("site", "") or ""),
+            speed=str(data.get("speed", "") or ""),
+            options=str(data.get("options", "") or ""),
+            source=str(data.get("source", "") or ""),
+            source_url=str(data.get("source_url", "") or ""),
+            notes=str(data.get("notes", "") or ""),
+        )

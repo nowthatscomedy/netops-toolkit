@@ -12,6 +12,7 @@ from app.services.logging_service import configure_logging
 from app.services.network_interface_service import NetworkInterfaceService
 from app.services.ping_service import PingService
 from app.services.powershell_service import PowerShellService
+from app.services.public_iperf_service import PublicIperfService
 from app.services.tcp_check_service import TcpCheckService
 from app.services.trace_service import TraceService
 from app.services.update_service import UpdateService
@@ -55,6 +56,7 @@ class AppState(QObject):
         self.trace_service = TraceService(self.logger)
         self.wireless_service = WirelessService(self.powershell_service, self.logger)
         self.iperf_service = IperfService(self.paths, self.logger)
+        self.public_iperf_service = PublicIperfService(self.paths, self.logger)
         self.wifi_profile_service = WifiProfileService(self.powershell_service, self.logger)
         self.update_service = UpdateService(self.logger)
 
