@@ -7,7 +7,7 @@ from app.models.network_models import NearbyAccessPoint, WirelessInfo
 from app.services.oui_service import OuiService
 from app.services.powershell_service import PowerShellService
 from app.utils.parser import parse_netsh_wlan_networks_output, parse_netsh_wlan_output
-from app.utils.process_utils import no_window_creationflags, windows_console_encoding
+from app.utils.process_utils import decode_windows_command_output, no_window_creationflags
 
 
 class WirelessService:
@@ -25,12 +25,10 @@ class WirelessService:
         completed = subprocess.run(
             ["netsh", "wlan", "show", "interfaces"],
             capture_output=True,
-            text=True,
-            encoding=windows_console_encoding(),
-            errors="replace",
+            text=False,
             creationflags=no_window_creationflags(),
         )
-        raw_output = completed.stdout or completed.stderr
+        raw_output = decode_windows_command_output(completed.stdout or completed.stderr)
         info = parse_netsh_wlan_output(raw_output)
         if not info.state:
             info.state = "사용 불가" if completed.returncode != 0 else "연결 안 됨"
@@ -42,12 +40,10 @@ class WirelessService:
         completed = subprocess.run(
             ["netsh", "wlan", "show", "networks", "mode=bssid"],
             capture_output=True,
-            text=True,
-            encoding=windows_console_encoding(),
-            errors="replace",
+            text=False,
             creationflags=no_window_creationflags(),
         )
-        raw_output = completed.stdout or completed.stderr
+        raw_output = decode_windows_command_output(completed.stdout or completed.stderr)
         access_points = parse_netsh_wlan_networks_output(raw_output)
         if self.oui_service is not None:
             for access_point in access_points:

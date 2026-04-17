@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+import re
 from typing import Callable
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QColor, QFontDatabase
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
     QComboBox,
-    QFormLayout,
+    QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -26,7 +28,6 @@ from PySide6.QtWidgets import (
 
 from app.app_state import AppState
 from app.models.network_models import NearbyAccessPoint, WirelessInfo
-from app.models.profile_models import WifiAdvancedProfile
 from app.utils.parser import summarize_channels
 from app.utils.threading_utils import FunctionWorker
 
@@ -36,34 +37,27 @@ class WirelessTab(QWidget):
         super().__init__(parent)
         self.state = state
         self._active_workers: list[FunctionWorker] = []
+        self._wireless_refresh_running = False
+        self._nearby_refresh_running = False
+        self.current_info: WirelessInfo | None = None
         self.previous_info: WirelessInfo | None = None
         self.nearby_access_points: list[NearbyAccessPoint] = []
-        self._pending_adapter_name = ""
-        self._pending_profile_name = ""
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_wireless_info)
-        self.fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        self.timer.timeout.connect(self._handle_auto_refresh_tick)
 
         self._build_ui()
-        self.state.config_reloaded.connect(self._reload_wifi_profiles)
-        self._reload_wifi_profiles()
+        QTimer.singleShot(0, self._rebuild_status_grid)
         self.refresh_wireless_info()
         self.refresh_nearby_access_points()
-        self.load_wireless_adapters()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        self.admin_label = QLabel()
-        self.admin_label.setWordWrap(True)
-        self._update_admin_banner()
-        layout.addWidget(self.admin_label)
-
         top_row = QHBoxLayout()
         layout.addLayout(top_row, 1)
 
-        status_group = QGroupBox("현재 Wi-Fi 상태")
-        status_layout = QVBoxLayout(status_group)
+        self.status_group = QGroupBox("현재 Wi-Fi 상태")
+        status_layout = QVBoxLayout(self.status_group)
         controls = QHBoxLayout()
         self.refresh_button = QPushButton("새로고침")
         self.auto_refresh_check = QCheckBox("자동 갱신")
@@ -78,31 +72,50 @@ class WirelessTab(QWidget):
         controls.addStretch(1)
         status_layout.addLayout(controls)
 
-        form = QFormLayout()
-        self.info_labels = {
-            "interface_name": QLabel("-"),
-            "state": QLabel("-"),
-            "ssid": QLabel("-"),
-            "bssid": QLabel("-"),
-            "radio_type": QLabel("-"),
-            "channel": QLabel("-"),
-            "band": QLabel("-"),
-            "signal": QLabel("-"),
-            "receive_rate": QLabel("-"),
-            "transmit_rate": QLabel("-"),
-        }
-        form.addRow("어댑터", self.info_labels["interface_name"])
-        form.addRow("상태", self.info_labels["state"])
-        form.addRow("SSID", self.info_labels["ssid"])
-        form.addRow("BSSID", self.info_labels["bssid"])
-        form.addRow("무선 규격", self.info_labels["radio_type"])
-        form.addRow("채널", self.info_labels["channel"])
-        form.addRow("대역", self.info_labels["band"])
-        form.addRow("신호", self.info_labels["signal"])
-        form.addRow("수신 속도", self.info_labels["receive_rate"])
-        form.addRow("송신 속도", self.info_labels["transmit_rate"])
-        status_layout.addLayout(form)
-        top_row.addWidget(status_group, 2)
+        self.info_fields = [
+            ("interface_name", "어댑터"),
+            ("state", "상태"),
+            ("ssid", "SSID"),
+            ("bssid", "BSSID"),
+            ("signal", "신호"),
+            ("channel", "채널"),
+            ("band", "대역"),
+            ("radio_type", "무선 규격"),
+            ("receive_rate", "수신 속도"),
+            ("transmit_rate", "송신 속도"),
+        ]
+        self.info_labels: dict[str, QLabel] = {}
+        self.status_cards: dict[str, QWidget] = {}
+        self.status_grid = QGridLayout()
+        self.status_grid.setContentsMargins(0, 0, 0, 0)
+        self.status_grid.setHorizontalSpacing(10)
+        self.status_grid.setVerticalSpacing(10)
+
+        for key, title in self.info_fields:
+            card = QWidget()
+            card.setObjectName("wirelessStatusCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(4)
+
+            title_label = QLabel(title)
+            title_label.setStyleSheet("color:#666; font-size:11px; font-weight:600;")
+
+            value_label = QLabel("-")
+            value_label.setWordWrap(True)
+            value_label.setStyleSheet("font-size:13px; font-weight:600;")
+
+            card_layout.addWidget(title_label)
+            card_layout.addWidget(value_label)
+
+            self.info_labels[key] = value_label
+            self.status_cards[key] = card
+
+        self.status_group.setStyleSheet(
+            "#wirelessStatusCard { background:#fafafa; border:1px solid #dcdcdc; border-radius:6px; }"
+        )
+        status_layout.addLayout(self.status_grid)
+        top_row.addWidget(self.status_group, 2)
 
         change_group = QGroupBox("연결 변화 로그")
         change_layout = QVBoxLayout(change_group)
@@ -112,6 +125,7 @@ class WirelessTab(QWidget):
 
         nearby_group = QGroupBox("주변 AP / 채널 현황")
         nearby_layout = QVBoxLayout(nearby_group)
+
         nearby_controls = QHBoxLayout()
         self.nearby_refresh_button = QPushButton("주변 AP 새로고침")
         self.nearby_refresh_oui_button = QPushButton("OUI 캐시 갱신")
@@ -123,85 +137,142 @@ class WirelessTab(QWidget):
         nearby_controls.addWidget(self.nearby_summary_label, 2)
         nearby_layout.addLayout(nearby_controls)
 
+        nearby_filter_row = QHBoxLayout()
+        nearby_filter_row.addWidget(QLabel("검색"))
+        self.nearby_search_edit = QLineEdit()
+        self.nearby_search_edit.setPlaceholderText("SSID / BSSID / 벤더")
+        nearby_filter_row.addWidget(self.nearby_search_edit, 2)
+
+        nearby_filter_row.addWidget(QLabel("대역"))
+        self.nearby_band_filter = QComboBox()
+        self.nearby_band_filter.addItem("전체", "all")
+        self.nearby_band_filter.addItem("2.4 GHz", "2.4")
+        self.nearby_band_filter.addItem("5 GHz", "5")
+        self.nearby_band_filter.addItem("6 GHz", "6")
+        nearby_filter_row.addWidget(self.nearby_band_filter)
+
+        nearby_filter_row.addWidget(QLabel("보안"))
+        self.nearby_security_filter = QComboBox()
+        self.nearby_security_filter.addItem("전체", "all")
+        self.nearby_security_filter.addItem("보안 사용", "secured")
+        self.nearby_security_filter.addItem("개방형", "open")
+        nearby_filter_row.addWidget(self.nearby_security_filter)
+
+        nearby_filter_row.addWidget(QLabel("정렬"))
+        self.nearby_sort_combo = QComboBox()
+        self.nearby_sort_combo.addItem("신호 높은 순", "signal_desc")
+        self.nearby_sort_combo.addItem("채널 낮은 순", "channel_asc")
+        self.nearby_sort_combo.addItem("채널 사용률 높은 순", "utilization_desc")
+        self.nearby_sort_combo.addItem("SSID 이름순", "ssid_asc")
+        self.nearby_sort_combo.addItem("벤더 이름순", "vendor_asc")
+        nearby_filter_row.addWidget(self.nearby_sort_combo)
+
+        self.nearby_connected_only_check = QCheckBox("현재 연결 AP만")
+        nearby_filter_row.addWidget(self.nearby_connected_only_check)
+        nearby_layout.addLayout(nearby_filter_row)
+
         self.nearby_table = QTableWidget(0, 10)
         self.nearby_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.nearby_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.nearby_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.nearby_table.setAlternatingRowColors(True)
+        self.nearby_table.setWordWrap(False)
+        self.nearby_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.nearby_table.setHorizontalHeaderLabels(
             ["SSID", "BSSID", "벤더", "신호", "무선 규격", "대역", "채널", "보안", "채널 사용률", "연결 단말"]
         )
         self.nearby_table.verticalHeader().setVisible(False)
-        self.nearby_table.horizontalHeader().setStretchLastSection(True)
+        self._configure_nearby_table_columns()
         nearby_layout.addWidget(self.nearby_table, 1)
-        layout.addWidget(nearby_group, 1)
-
-        bottom_group = QGroupBox("Wi-Fi 고급 설정 프로필")
-        bottom_layout = QFormLayout(bottom_group)
-        self.adapter_combo = QComboBox()
-        self.wifi_profile_combo = QComboBox()
-        self.property_output = QPlainTextEdit()
-        self.property_output.setReadOnly(True)
-        self.property_output.setFont(self.fixed_font)
-        self.property_output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.profile_result = QPlainTextEdit()
-        self.profile_result.setReadOnly(True)
-        self.profile_result.setMaximumHeight(120)
-        self.profile_result.setFont(self.fixed_font)
-        self.profile_result.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        buttons = QHBoxLayout()
-        self.refresh_adapters_button = QPushButton("어댑터 새로고침")
-        self.load_properties_button = QPushButton("현재값 조회")
-        self.apply_profile_button = QPushButton("프로필 적용")
-        buttons.addWidget(self.refresh_adapters_button)
-        buttons.addWidget(self.load_properties_button)
-        buttons.addWidget(self.apply_profile_button)
-        bottom_layout.addRow("어댑터", self.adapter_combo)
-        bottom_layout.addRow("프로필", self.wifi_profile_combo)
-        bottom_layout.addRow("", buttons)
-        bottom_layout.addRow("현재 속성", self.property_output)
-        bottom_layout.addRow("적용 결과", self.profile_result)
-        layout.addWidget(bottom_group, 1)
+        layout.addWidget(nearby_group, 2)
 
         self.refresh_button.clicked.connect(self.refresh_wireless_info)
         self.auto_refresh_check.toggled.connect(self._toggle_auto_refresh)
         self.interval_spin.valueChanged.connect(self._handle_interval_change)
         self.nearby_refresh_button.clicked.connect(self.refresh_nearby_access_points)
         self.nearby_refresh_oui_button.clicked.connect(self.refresh_nearby_oui_cache)
-        self.refresh_adapters_button.clicked.connect(self.load_wireless_adapters)
-        self.load_properties_button.clicked.connect(self.load_adapter_properties)
-        self.apply_profile_button.clicked.connect(self.apply_wifi_profile)
+        self.nearby_search_edit.textChanged.connect(self._apply_nearby_view)
+        self.nearby_band_filter.currentIndexChanged.connect(self._apply_nearby_view)
+        self.nearby_security_filter.currentIndexChanged.connect(self._apply_nearby_view)
+        self.nearby_sort_combo.currentIndexChanged.connect(self._apply_nearby_view)
+        self.nearby_connected_only_check.toggled.connect(self._apply_nearby_view)
 
-    def _update_admin_banner(self) -> None:
-        if self.state.is_admin:
-            self.admin_label.setText("관리자 권한으로 실행 중입니다. Wi-Fi 고급 속성 프로필을 적용할 수 있습니다.")
-            self.admin_label.setStyleSheet("background:#e8f5e9; color:#1b5e20; padding:8px; border:1px solid #a5d6a7;")
-        else:
-            self.admin_label.setText("현재 상태 조회는 가능하지만, Wi-Fi 고급 속성 적용에는 관리자 권한이 필요합니다.")
-            self.admin_label.setStyleSheet("background:#fff8e1; color:#8d6e00; padding:8px; border:1px solid #ffe082;")
+    def _status_column_count(self) -> int:
+        width = self.status_group.width() or self.width()
+        if width >= 960:
+            return 3
+        if width >= 620:
+            return 2
+        return 1
 
-    def _reload_wifi_profiles(self) -> None:
-        self.wifi_profile_combo.clear()
-        for profile in self.state.wifi_profiles:
-            self.wifi_profile_combo.addItem(profile.name)
-        if self._pending_profile_name:
-            index = self.wifi_profile_combo.findText(self._pending_profile_name)
-            if index >= 0:
-                self.wifi_profile_combo.setCurrentIndex(index)
-                self._pending_profile_name = ""
+    def _rebuild_status_grid(self) -> None:
+        if not hasattr(self, "status_grid"):
+            return
+
+        for card in self.status_cards.values():
+            self.status_grid.removeWidget(card)
+
+        columns = self._status_column_count()
+        max_columns = 3
+        for column in range(max_columns):
+            self.status_grid.setColumnStretch(column, 1 if column < columns else 0)
+
+        for index, (key, _) in enumerate(self.info_fields):
+            row = index // columns
+            column = index % columns
+            self.status_grid.addWidget(self.status_cards[key], row, column)
+
+    def _configure_nearby_table_columns(self) -> None:
+        header = self.nearby_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(56)
+
+        stretch_columns = {0, 2, 7}
+        fixed_widths = {
+            1: 138,
+            3: 64,
+            4: 96,
+            5: 66,
+            6: 58,
+            8: 88,
+            9: 78,
+        }
+
+        for column in range(self.nearby_table.columnCount()):
+            if column in stretch_columns:
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+            else:
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+                self.nearby_table.setColumnWidth(column, fixed_widths.get(column, 96))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._rebuild_status_grid()
+
+    def _handle_auto_refresh_tick(self) -> None:
+        self.refresh_wireless_info()
+        self.refresh_nearby_access_points()
 
     def refresh_wireless_info(self) -> None:
+        if self._wireless_refresh_running:
+            return
+        self._wireless_refresh_running = True
         self._start_worker(
             self.state.wireless_service.get_wireless_info,
             on_result=self._update_wireless_view,
+            on_finished=lambda: self._set_refresh_running("wireless", False),
             error_title="무선 상태 조회 실패",
         )
 
     def refresh_nearby_access_points(self) -> None:
+        if self._nearby_refresh_running:
+            return
+        self._nearby_refresh_running = True
         self.nearby_summary_label.setText("주변 AP를 스캔하는 중...")
         self._start_worker(
             self.state.wireless_service.scan_nearby_access_points,
             on_result=self._update_nearby_access_points,
+            on_finished=lambda: self._set_refresh_running("nearby", False),
             error_title="주변 AP 조회 실패",
         )
 
@@ -214,6 +285,7 @@ class WirelessTab(QWidget):
         )
 
     def _update_wireless_view(self, info: WirelessInfo) -> None:
+        self.current_info = info
         self.info_labels["interface_name"].setText(info.interface_name or info.description or "-")
         self.info_labels["interface_name"].setToolTip(info.description or info.interface_name or "")
         self.info_labels["state"].setText(info.state or "-")
@@ -228,15 +300,21 @@ class WirelessTab(QWidget):
 
         state_lower = info.state.lower()
         state_color = "#1b5e20" if ("connected" in state_lower or "연결" in info.state) else "#b71c1c"
-        self.info_labels["state"].setStyleSheet(f"color:{state_color}; font-weight:bold;")
+        self.info_labels["state"].setStyleSheet(f"font-size:13px; font-weight:700; color:{state_color};")
         self._log_wireless_changes(info)
         self.previous_info = info
+        self._apply_nearby_view()
 
     def _update_nearby_access_points(self, access_points: list[NearbyAccessPoint]) -> None:
         self.nearby_access_points = access_points
-        self.nearby_table.setRowCount(0)
+        self._apply_nearby_view()
 
-        for access_point in access_points:
+    def _apply_nearby_view(self) -> None:
+        self.nearby_table.setRowCount(0)
+        filtered_access_points = self._filtered_nearby_access_points()
+        current_bssid = self._normalize_bssid(self.current_info.bssid if self.current_info else "")
+
+        for access_point in filtered_access_points:
             row = self.nearby_table.rowCount()
             self.nearby_table.insertRow(row)
             security = " / ".join(part for part in [access_point.authentication, access_point.encryption] if part) or "-"
@@ -256,6 +334,8 @@ class WirelessTab(QWidget):
                 ),
                 str(access_point.connected_stations) if access_point.connected_stations is not None else "-",
             ]
+
+            is_current_ap = bool(current_bssid and self._normalize_bssid(access_point.bssid) == current_bssid)
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 3 and access_point.signal_percent is not None:
@@ -265,12 +345,140 @@ class WirelessTab(QWidget):
                         item.setForeground(QColor("#ef6c00"))
                     else:
                         item.setForeground(QColor("#b71c1c"))
+                if column in {1, 3, 4, 5, 6, 8, 9}:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if is_current_ap:
+                    item.setBackground(QColor("#e8f5e9"))
+                    item.setToolTip("현재 연결된 AP")
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    if column != 3:
+                        item.setForeground(QColor("#1b5e20"))
                 self.nearby_table.setItem(row, column, item)
 
-        summary = summarize_channels(access_points)
-        count_text = f"AP {len(access_points)}개"
+        self._update_nearby_summary(filtered_access_points)
+
+    def _filtered_nearby_access_points(self) -> list[NearbyAccessPoint]:
+        search_text = self.nearby_search_edit.text().strip().lower()
+        band_filter = str(self.nearby_band_filter.currentData() or "all")
+        security_filter = str(self.nearby_security_filter.currentData() or "all")
+        connected_only = self.nearby_connected_only_check.isChecked()
+
+        filtered: list[NearbyAccessPoint] = []
+        for access_point in self.nearby_access_points:
+            if search_text:
+                haystack = " ".join(
+                    [
+                        access_point.ssid or "",
+                        access_point.bssid or "",
+                        access_point.vendor or "",
+                        access_point.radio_standard or "",
+                    ]
+                ).lower()
+                if search_text not in haystack:
+                    continue
+
+            if band_filter != "all" and not self._matches_band_filter(access_point.band, band_filter):
+                continue
+
+            if security_filter != "all" and self._security_category(access_point) != security_filter:
+                continue
+
+            if connected_only and not self._is_current_access_point(access_point):
+                continue
+
+            filtered.append(access_point)
+
+        sort_mode = str(self.nearby_sort_combo.currentData() or "signal_desc")
+        filtered.sort(key=lambda ap: self._nearby_sort_key(ap, sort_mode))
+        return filtered
+
+    def _update_nearby_summary(self, filtered_access_points: list[NearbyAccessPoint]) -> None:
+        total_count = len(self.nearby_access_points)
+        shown_count = len(filtered_access_points)
         cache_text = self.state.oui_service.cache_summary()
-        self.nearby_summary_label.setText(f"{count_text} | {summary} | {cache_text}")
+
+        if filtered_access_points:
+            summary = summarize_channels(filtered_access_points)
+        elif total_count:
+            summary = "필터 조건에 맞는 AP가 없습니다."
+        else:
+            summary = "감지된 주변 AP가 없습니다."
+
+        parts = [f"표시 {shown_count} / 전체 {total_count}"]
+        if self._is_connected():
+            ssid = self.current_info.ssid or "-"
+            channel = self.current_info.channel or "-"
+            parts.append(f"현재 연결 {ssid} / 채널 {channel}")
+        parts.append(summary)
+        parts.append(cache_text)
+        self.nearby_summary_label.setText(" | ".join(parts))
+
+    def _matches_band_filter(self, band_text: str, band_filter: str) -> bool:
+        normalized = (band_text or "").replace(" ", "").lower()
+        if band_filter == "2.4":
+            return "2.4" in normalized
+        if band_filter == "5":
+            return normalized.startswith("5")
+        if band_filter == "6":
+            return normalized.startswith("6")
+        return True
+
+    def _security_category(self, access_point: NearbyAccessPoint) -> str:
+        auth = (access_point.authentication or "").strip().lower()
+        encryption = (access_point.encryption or "").strip().lower()
+
+        if any(token in auth for token in ("open", "개방")):
+            return "open"
+        if any(token in encryption for token in ("none", "없음")) and not auth:
+            return "open"
+        if auth or encryption:
+            return "secured"
+        return "all"
+
+    def _nearby_sort_key(self, access_point: NearbyAccessPoint, sort_mode: str) -> tuple:
+        current_priority = 0 if self._is_current_access_point(access_point) else 1
+        channel_number = self._channel_sort_value(access_point.channel)
+        signal_value = access_point.signal_percent if access_point.signal_percent is not None else -1
+        utilization = (
+            access_point.channel_utilization_percent
+            if access_point.channel_utilization_percent is not None
+            else -1
+        )
+        ssid_value = (access_point.ssid or "").lower()
+        vendor_value = (access_point.vendor or "").lower()
+
+        if sort_mode == "channel_asc":
+            return (current_priority, channel_number, -signal_value, ssid_value, vendor_value)
+        if sort_mode == "utilization_desc":
+            return (current_priority, -utilization, -signal_value, ssid_value)
+        if sort_mode == "ssid_asc":
+            return (current_priority, ssid_value, -signal_value, channel_number)
+        if sort_mode == "vendor_asc":
+            return (current_priority, vendor_value, ssid_value, -signal_value)
+        return (current_priority, -signal_value, channel_number, ssid_value)
+
+    def _is_current_access_point(self, access_point: NearbyAccessPoint) -> bool:
+        current_bssid = self._normalize_bssid(self.current_info.bssid if self.current_info else "")
+        if not current_bssid:
+            return False
+        return self._normalize_bssid(access_point.bssid) == current_bssid
+
+    def _is_connected(self) -> bool:
+        if self.current_info is None:
+            return False
+        state_lower = (self.current_info.state or "").lower()
+        return bool(self.current_info.bssid and ("connected" in state_lower or "연결" in self.current_info.state))
+
+    def _channel_sort_value(self, channel_text: str) -> int:
+        match = re.search(r"\d+", channel_text or "")
+        if not match:
+            return 9999
+        return int(match.group(0))
+
+    def _normalize_bssid(self, bssid: str) -> str:
+        return re.sub(r"[^0-9A-Fa-f]", "", bssid or "").lower()
 
     def _finish_nearby_oui_refresh(self, result) -> None:
         if result.success:
@@ -303,6 +511,7 @@ class WirelessTab(QWidget):
 
     def _toggle_auto_refresh(self, enabled: bool) -> None:
         if enabled:
+            self._handle_auto_refresh_tick()
             self.timer.start(self.interval_spin.value() * 1000)
         else:
             self.timer.stop()
@@ -311,69 +520,22 @@ class WirelessTab(QWidget):
         if self.auto_refresh_check.isChecked():
             self.timer.start(value * 1000)
 
-    def load_wireless_adapters(self) -> None:
-        self._start_worker(
-            self.state.wireless_service.list_wireless_adapters,
-            on_result=self._populate_adapter_combo,
-            error_title="무선 어댑터 목록 조회 실패",
-        )
-
-    def _populate_adapter_combo(self, adapters: list[str]) -> None:
-        self.adapter_combo.clear()
-        self.adapter_combo.addItems(adapters)
-        if self._pending_adapter_name:
-            index = self.adapter_combo.findText(self._pending_adapter_name)
-            if index >= 0:
-                self.adapter_combo.setCurrentIndex(index)
-                self._pending_adapter_name = ""
-
-    def load_adapter_properties(self) -> None:
-        adapter = self.adapter_combo.currentText().strip()
-        if not adapter:
-            QMessageBox.warning(self, "선택 필요", "무선 어댑터를 먼저 선택해 주세요.")
+    def _set_refresh_running(self, refresh_type: str, running: bool) -> None:
+        if refresh_type == "wireless":
+            self._wireless_refresh_running = running
             return
-        self.property_output.setPlainText("어댑터 속성 조회 중...")
-        self._start_worker(
-            self.state.wifi_profile_service.get_advanced_properties,
-            adapter,
-            on_result=lambda properties: self.property_output.setPlainText(
-                self.state.wifi_profile_service.format_properties(properties)
-            ),
-            error_title="속성 조회 실패",
-        )
-
-    def apply_wifi_profile(self) -> None:
-        adapter = self.adapter_combo.currentText().strip()
-        profile = self._selected_wifi_profile()
-        if not adapter or not profile:
-            QMessageBox.warning(self, "선택 필요", "어댑터와 프로필을 모두 선택해 주세요.")
-            return
-        if not self.state.is_admin:
-            QMessageBox.warning(self, "관리자 권한 필요", "Wi-Fi 고급 속성 적용은 관리자 권한이 필요합니다.")
-            return
-        self.profile_result.setPlainText("프로필 적용 중...")
-        self._start_worker(
-            self.state.wifi_profile_service.apply_profile,
-            adapter,
-            profile,
-            on_result=lambda result: self.profile_result.setPlainText(result.message + ("\n\n" + result.details if result.details else "")),
-            on_finished=self.load_adapter_properties,
-            error_title="프로필 적용 실패",
-        )
-
-    def _selected_wifi_profile(self) -> WifiAdvancedProfile | None:
-        index = self.wifi_profile_combo.currentIndex()
-        if index < 0 or index >= len(self.state.wifi_profiles):
-            return None
-        return self.state.wifi_profiles[index]
+        if refresh_type == "nearby":
+            self._nearby_refresh_running = running
 
     def save_ui_state(self) -> dict:
-        profile = self._selected_wifi_profile()
         return {
             "auto_refresh": self.auto_refresh_check.isChecked(),
             "interval_sec": self.interval_spin.value(),
-            "selected_adapter": self.adapter_combo.currentText().strip(),
-            "selected_profile": profile.name if profile else self.wifi_profile_combo.currentText().strip(),
+            "nearby_search": self.nearby_search_edit.text().strip(),
+            "nearby_band_filter": str(self.nearby_band_filter.currentData() or "all"),
+            "nearby_security_filter": str(self.nearby_security_filter.currentData() or "all"),
+            "nearby_sort": str(self.nearby_sort_combo.currentData() or "signal_desc"),
+            "nearby_connected_only": self.nearby_connected_only_check.isChecked(),
         }
 
     def restore_ui_state(self, ui_state: dict | None) -> None:
@@ -383,23 +545,18 @@ class WirelessTab(QWidget):
 
         interval_sec = int(state.get("interval_sec", self.interval_spin.value()) or self.interval_spin.value())
         self.interval_spin.setValue(max(1, min(30, interval_sec)))
-
-        self._pending_adapter_name = str(state.get("selected_adapter", "") or "").strip()
-        self._pending_profile_name = str(state.get("selected_profile", "") or "").strip()
-
-        if self._pending_profile_name:
-            index = self.wifi_profile_combo.findText(self._pending_profile_name)
-            if index >= 0:
-                self.wifi_profile_combo.setCurrentIndex(index)
-                self._pending_profile_name = ""
-
-        if self._pending_adapter_name:
-            index = self.adapter_combo.findText(self._pending_adapter_name)
-            if index >= 0:
-                self.adapter_combo.setCurrentIndex(index)
-                self._pending_adapter_name = ""
-
+        self.nearby_search_edit.setText(str(state.get("nearby_search", "") or ""))
+        self._set_combo_data(self.nearby_band_filter, str(state.get("nearby_band_filter", "all") or "all"))
+        self._set_combo_data(self.nearby_security_filter, str(state.get("nearby_security_filter", "all") or "all"))
+        self._set_combo_data(self.nearby_sort_combo, str(state.get("nearby_sort", "signal_desc") or "signal_desc"))
+        self.nearby_connected_only_check.setChecked(bool(state.get("nearby_connected_only", False)))
         self.auto_refresh_check.setChecked(bool(state.get("auto_refresh", False)))
+        self._apply_nearby_view()
+
+    def _set_combo_data(self, combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
 
     def _start_worker(
         self,

@@ -98,3 +98,62 @@ def parse_positive_int(value: str | int, field_name: str, minimum: int = 1, maxi
     if maximum is not None and parsed > maximum:
         raise ValidationError(f"{field_name} 값은 {maximum} 이하여야 합니다.")
     return parsed
+
+
+def calculate_subnet_details(ip_value: str, prefix_value: str | int) -> dict[str, str]:
+    ip_text = validate_ipv4(ip_value, "IPv4")
+    prefix_length = parse_prefix_value(prefix_value)
+    interface = ipaddress.IPv4Interface(f"{ip_text}/{prefix_length}")
+    network = interface.network
+
+    wildcard_mask = ipaddress.IPv4Address(int(ipaddress.IPv4Address("255.255.255.255")) ^ int(network.netmask))
+    total_addresses = network.num_addresses
+
+    if prefix_length >= 32:
+        usable_hosts = 1
+        first_host = last_host = str(interface.ip)
+        host_range = str(interface.ip)
+        notes = "/32 단일 호스트"
+    elif prefix_length == 31:
+        usable_hosts = 2
+        first_host = str(network.network_address)
+        last_host = str(network.broadcast_address)
+        host_range = f"{first_host} - {last_host}"
+        notes = "/31 포인트투포인트"
+    else:
+        usable_hosts = max(total_addresses - 2, 0)
+        first_host = str(network.network_address + 1)
+        last_host = str(network.broadcast_address - 1)
+        host_range = f"{first_host} - {last_host}" if usable_hosts else "-"
+        notes = "-"
+
+    return {
+        "ip_address": ip_text,
+        "prefix_length": str(prefix_length),
+        "cidr": f"{ip_text}/{prefix_length}",
+        "network_address": str(network.network_address),
+        "broadcast_address": str(network.broadcast_address),
+        "netmask": str(network.netmask),
+        "wildcard_mask": str(wildcard_mask),
+        "first_host": first_host,
+        "last_host": last_host,
+        "host_range": host_range,
+        "usable_hosts": f"{usable_hosts:,}",
+        "total_addresses": f"{total_addresses:,}",
+        "address_scope": _ipv4_scope_label(interface.ip),
+        "notes": notes,
+    }
+
+
+def _ipv4_scope_label(address: ipaddress.IPv4Address) -> str:
+    if address.is_loopback:
+        return "루프백"
+    if address.is_link_local:
+        return "링크 로컬"
+    if address.is_multicast:
+        return "멀티캐스트"
+    if address.is_private:
+        return "사설"
+    if address.is_reserved:
+        return "예약됨"
+    return "공인"

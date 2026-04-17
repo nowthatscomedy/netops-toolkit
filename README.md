@@ -206,7 +206,7 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 # Inno Setup 6 필요
-powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.2 -Clean
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.4 -Clean
 ```
 
 ## 릴리즈 운영 흐름
@@ -221,7 +221,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.
 
 사전배포 버전을 배포하려면:
 
-1. [app/version.py](/C:/Users/PC/Desktop/python/netops-toolkit/app/version.py)를 예: `1.0.3-beta.1` 형식으로 변경
+1. [app/version.py](/C:/Users/PC/Desktop/python/netops-toolkit/app/version.py)를 예: `1.0.4-beta.1` 형식으로 변경
 2. `main`에 푸시
 3. GitHub Actions가 해당 태그를 prerelease로 발행
 4. 앱에서 `사전 배포 포함(prerelease)` 옵션을 켠 사용자만 해당 버전 확인 가능

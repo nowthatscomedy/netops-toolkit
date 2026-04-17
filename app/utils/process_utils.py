@@ -20,6 +20,32 @@ def windows_console_encoding() -> str:
     return encoding
 
 
+def decode_windows_command_output(output: bytes | str | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    if not output:
+        return ""
+
+    preferred = locale.getpreferredencoding(False) or "utf-8"
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for encoding in ("utf-8", preferred, "mbcs", "oem", "cp949", "euc-kr", "cp1252"):
+        normalized = encoding.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(encoding)
+
+    for encoding in candidates:
+        try:
+            return output.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return output.decode("utf-8", errors="replace")
+
+
 def no_window_creationflags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 

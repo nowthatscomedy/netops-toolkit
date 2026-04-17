@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDockWidget,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -38,7 +40,7 @@ from app.models.result_models import OperationResult, PingResult, TcpCheckResult
 from app.utils.file_utils import timestamped_export_path
 from app.utils.parser import parse_trace_hop_line, parse_trace_hops
 from app.utils.threading_utils import FunctionWorker
-from app.utils.validators import ValidationError, parse_positive_int, validate_host_input
+from app.utils.validators import ValidationError, calculate_subnet_details, parse_positive_int, validate_host_input
 
 
 class ResultDockWidget(QDockWidget):
@@ -88,6 +90,8 @@ class DiagnosticsTab(QWidget):
         self.tcp_row_map: dict[tuple[str, str, int], int] = {}
         self.trace_row_map: dict[int, int] = {}
         self.arp_subnet_candidates: list[str] = []
+        self._arp_scan_history: dict[str, dict[str, str]] = {}
+        self._current_arp_scan_subnet = ""
         self.ping_log_lines: dict[tuple[str, str], list[str]] = {}
         self.tcp_log_lines: dict[tuple[str, str, int], list[str]] = {}
         self._iperf_available = False
@@ -155,6 +159,7 @@ class DiagnosticsTab(QWidget):
             ["이름", "대상", "상태", "전송", "수신", "실패", "손실률", "최소(ms)", "평균(ms)", "최대(ms)", "최근 시각"]
         )
         self._setup_table(self.ping_table)
+        self._set_stretch_columns(self.ping_table, 1)
 
         self.ping_log = self._output()
         self.ping_log_panel = self._build_log_panel("실시간 로그", self.ping_log)
@@ -214,6 +219,7 @@ class DiagnosticsTab(QWidget):
         self.tcp_table.setHorizontalHeaderLabels(
             ["이름", "대상", "포트", "상태", "시도", "성공", "실패", "손실률", "최소(ms)", "평균(ms)", "최대(ms)", "최근 시각"]
         )
+        self._set_stretch_columns(self.tcp_table, 1)
 
         self.tcp_log = self._output()
         self.tcp_log_panel = self._build_log_panel("실시간 로그", self.tcp_log)
@@ -291,6 +297,7 @@ class DiagnosticsTab(QWidget):
         self.trace_table = QTableWidget(0, 7)
         self.trace_table.setHorizontalHeaderLabels(["Hop", "RTT1", "RTT2", "RTT3", "평균(ms)", "목적지", "상태"])
         self._setup_table(self.trace_table)
+        self._set_stretch_columns(self.trace_table, 5)
         self.trace_table.setMaximumHeight(220)
         layout.addWidget(self.trace_table)
         self.trace_output = self._output()
@@ -307,9 +314,9 @@ class DiagnosticsTab(QWidget):
         self.tools_inner_tab = QTabWidget()
         self.tools_inner_tab.addTab(self._build_command_tools_page(), "명령 출력")
         self.tools_inner_tab.addTab(self._build_arp_scan_page(), "ARP 스캔")
+        self.tools_inner_tab.addTab(self._build_subnet_calc_page(), "서브넷 계산기")
         self.tools_inner_tab.addTab(self._build_oui_lookup_page(), "MAC OUI")
         layout.addWidget(self.tools_inner_tab, 1)
-
         self._refresh_oui_status_labels()
         return page
 
@@ -346,6 +353,84 @@ class DiagnosticsTab(QWidget):
         )
         return page
 
+    def _build_subnet_calc_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        input_group = QGroupBox("입력")
+        input_layout = QVBoxLayout(input_group)
+        subnet_form = QFormLayout()
+        self.subnet_calc_ip_edit = QLineEdit()
+        self.subnet_calc_ip_edit.setPlaceholderText("예: 192.168.0.10")
+        self.subnet_calc_prefix_edit = QLineEdit()
+        self.subnet_calc_prefix_edit.setPlaceholderText("예: 24 또는 255.255.255.0")
+        self.subnet_calc_interface_combo = QComboBox()
+        self.subnet_calc_interface_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.subnet_calc_refresh_button = QPushButton("인터페이스 불러오기")
+        self.subnet_calc_use_selected_button = QPushButton("선택 값 자동입력")
+        subnet_form.addRow("IPv4", self.subnet_calc_ip_edit)
+        subnet_form.addRow("Prefix / Mask", self.subnet_calc_prefix_edit)
+        interface_row = QHBoxLayout()
+        interface_row.addWidget(self.subnet_calc_interface_combo, 1)
+        interface_row.addWidget(self.subnet_calc_refresh_button)
+        interface_row.addWidget(self.subnet_calc_use_selected_button)
+        subnet_form.addRow("인터페이스", interface_row)
+        input_layout.addLayout(subnet_form)
+
+        subnet_button_row = QHBoxLayout()
+        self.subnet_calc_button = QPushButton("계산")
+        subnet_button_row.addWidget(self.subnet_calc_button)
+        subnet_button_row.addStretch(1)
+        input_layout.addLayout(subnet_button_row)
+
+        self.subnet_calc_status_label = QLabel("IPv4와 Prefix를 입력하면 서브넷 정보를 계산합니다.")
+        self.subnet_calc_status_label.setWordWrap(True)
+        self.subnet_calc_status_label.setStyleSheet("color:#666;")
+        input_layout.addWidget(self.subnet_calc_status_label)
+        layout.addWidget(input_group)
+
+        result_group = QGroupBox("계산 결과")
+        result_layout = QVBoxLayout(result_group)
+        summary_grid = QGridLayout()
+        self.subnet_calc_summary_labels: dict[str, QLabel] = {}
+        for index, (key, title, color) in enumerate(
+            [
+                ("network_address", "네트워크 주소", "#1b5e20"),
+                ("host_range", "사용 가능 범위", "#1565c0"),
+                ("broadcast_address", "브로드캐스트", "#ef6c00"),
+                ("usable_hosts", "사용 가능 호스트", "#6a1b9a"),
+            ]
+        ):
+            card, value_label = self._build_subnet_metric_card(title, color)
+            self.subnet_calc_summary_labels[key] = value_label
+            summary_grid.addWidget(card, index // 2, index % 2)
+        result_layout.addLayout(summary_grid)
+
+        self.subnet_calc_result_hint = QLabel("계산하면 주요 요약과 상세 네트워크 정보가 아래에 정리됩니다.")
+        self.subnet_calc_result_hint.setStyleSheet("color:#666; padding:4px 2px 2px 2px;")
+        result_layout.addWidget(self.subnet_calc_result_hint)
+
+        self.subnet_calc_detail_table = QTableWidget(0, 2)
+        self.subnet_calc_detail_table.setHorizontalHeaderLabels(["항목", "값"])
+        self.subnet_calc_detail_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.subnet_calc_detail_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.subnet_calc_detail_table.verticalHeader().setVisible(False)
+        self.subnet_calc_detail_table.horizontalHeader().setStretchLastSection(True)
+        self.subnet_calc_detail_table.setAlternatingRowColors(True)
+        self.subnet_calc_detail_table.setColumnWidth(0, 180)
+        self.subnet_calc_detail_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        result_layout.addWidget(self.subnet_calc_detail_table, 1)
+        self._clear_subnet_calc_results()
+        layout.addWidget(result_group, 1)
+
+        self.subnet_calc_button.clicked.connect(self.calculate_subnet_from_tools_inputs)
+        self.subnet_calc_refresh_button.clicked.connect(self.refresh_subnet_calc_interfaces)
+        self.subnet_calc_use_selected_button.clicked.connect(self.use_selected_subnet_calc_interface)
+        self.subnet_calc_ip_edit.returnPressed.connect(self.calculate_subnet_from_tools_inputs)
+        self.subnet_calc_prefix_edit.returnPressed.connect(self.calculate_subnet_from_tools_inputs)
+        return page
+
     def _build_arp_scan_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -356,12 +441,15 @@ class DiagnosticsTab(QWidget):
         self.arp_subnet_edit.setPlaceholderText("예: 192.168.0.0/24")
         self.arp_subnet_combo = QComboBox()
         self.arp_subnet_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self.arp_refresh_subnets_button = QPushButton("인터페이스 기준 불러오기")
-        self.arp_use_selected_subnet_button = QPushButton("선택값 입력")
+        self.arp_refresh_subnets_button = QPushButton("인터페이스 불러오기")
+        self.arp_use_selected_subnet_button = QPushButton("선택 값 자동입력")
         self.arp_timeout_edit = QLineEdit()
         self.arp_timeout_edit.setPlaceholderText("800")
         self.arp_workers_edit = QLineEdit()
         self.arp_workers_edit.setPlaceholderText("64")
+        self.arp_workers_edit.setToolTip(
+            "ARP 스캔 시 한 번에 동시에 Ping을 보내는 호스트 수입니다. 값이 클수록 빨라질 수 있지만 부하도 늘어납니다."
+        )
         self.arp_start_button = QPushButton("스캔")
         self.arp_cancel_button = QPushButton("중지")
         self.arp_cancel_button.setEnabled(False)
@@ -382,16 +470,17 @@ class DiagnosticsTab(QWidget):
         action_row.addStretch(1)
 
         form.addRow("서브넷", self.arp_subnet_edit)
-        form.addRow("활성 서브넷", subnet_button_row)
+        form.addRow("인터페이스", subnet_button_row)
         form.addRow("Timeout (ms)", self.arp_timeout_edit)
         form.addRow("동시 실행 수", self.arp_workers_edit)
         form.addRow("", action_row)
         form.addRow("OUI 캐시", self.arp_oui_status_label)
         layout.addWidget(group)
 
-        self.arp_table = QTableWidget(0, 7)
-        self.arp_table.setHorizontalHeaderLabels(["IP", "MAC", "벤더", "상태", "응답(ms)", "ARP 타입", "인터페이스"])
+        self.arp_table = QTableWidget(0, 8)
+        self.arp_table.setHorizontalHeaderLabels(["IP", "MAC", "벤더", "상태", "감지", "응답(ms)", "ARP 타입", "인터페이스"])
         self._setup_table(self.arp_table)
+        self._set_stretch_columns(self.arp_table, 2, 7)
         layout.addWidget(self.arp_table, 1)
 
         self.arp_output = self._output()
@@ -411,10 +500,17 @@ class DiagnosticsTab(QWidget):
 
         group = QGroupBox("MAC OUI 벤더 조회")
         form = QFormLayout(group)
-        self.oui_mac_edit = QLineEdit()
-        self.oui_mac_edit.setPlaceholderText("예: 58:86:94:A1:5A:BA")
+        self.oui_mac_edit = QPlainTextEdit()
+        self.oui_mac_edit.setMaximumHeight(110)
+        self.oui_mac_edit.setPlaceholderText(
+            "예:\n"
+            "AP-1,58:86:94:A1:5A:BA\n"
+            "BSSID: 88-36-6C-8A-E1-D4\n"
+            "0011.2233.4455\n"
+            "58 86 94 A1 5A BA"
+        )
         self.oui_lookup_button = QPushButton("조회")
-        self.oui_refresh_button = QPushButton("IEEE 캐시 갱신")
+        self.oui_refresh_button = QPushButton("OUI 캐시 갱신")
         self.oui_status_label = QLabel()
         self.oui_status_label.setStyleSheet("color:#666;")
 
@@ -423,13 +519,28 @@ class DiagnosticsTab(QWidget):
         action_row.addWidget(self.oui_refresh_button)
         action_row.addStretch(1)
 
-        form.addRow("MAC 주소", self.oui_mac_edit)
+        form.addRow("MAC 주소 목록", self.oui_mac_edit)
         form.addRow("", action_row)
         form.addRow("캐시 상태", self.oui_status_label)
         layout.addWidget(group)
 
+        self.oui_table = QTableWidget(0, 5)
+        self.oui_table.setHorizontalHeaderLabels(
+            ["이름", "입력 MAC", "정규화", "벤더", "상태"]
+        )
+        self._setup_table(self.oui_table)
+        oui_header = self.oui_table.horizontalHeader()
+        oui_header.setStretchLastSection(False)
+        oui_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        oui_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        oui_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        oui_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        oui_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.oui_table, 1)
+
         self.oui_result_output = self._output()
-        layout.addWidget(self.oui_result_output, 1)
+        self.oui_result_output.setMaximumHeight(160)
+        layout.addWidget(self.oui_result_output)
 
         self.oui_lookup_button.clicked.connect(self.lookup_oui_vendor)
         self.oui_refresh_button.clicked.connect(lambda: self.refresh_oui_cache(self.oui_result_output))
@@ -567,12 +678,91 @@ class DiagnosticsTab(QWidget):
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setStretchLastSection(True)
 
+    def _set_stretch_columns(self, table: QTableWidget, *stretch_columns: int) -> None:
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        stretch_set = set(stretch_columns)
+        for column in range(table.columnCount()):
+            mode = QHeaderView.ResizeMode.Stretch if column in stretch_set else QHeaderView.ResizeMode.ResizeToContents
+            header.setSectionResizeMode(column, mode)
+
     def _output(self) -> QPlainTextEdit:
         output = QPlainTextEdit()
         output.setReadOnly(True)
         output.setFont(self.fixed_font)
         output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         return output
+
+    def _build_subnet_metric_card(self, title: str, accent_color: str) -> tuple[QWidget, QLabel]:
+        card = QWidget()
+        card.setObjectName("subnetMetricCard")
+        card.setStyleSheet(
+            f"""
+            QWidget#subnetMetricCard {{
+                background:#f8fafc;
+                border:1px solid #d7dee7;
+                border-radius:8px;
+            }}
+            QLabel {{
+                border:none;
+            }}
+            """
+        )
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("color:#667085; font-weight:600;")
+        value_label = QLabel("-")
+        value_label.setStyleSheet(f"color:{accent_color}; font-size:18px; font-weight:700;")
+        value_label.setWordWrap(True)
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        layout.addStretch(1)
+        return card, value_label
+
+    def _clear_subnet_calc_results(self) -> None:
+        if hasattr(self, "subnet_calc_summary_labels"):
+            for label in self.subnet_calc_summary_labels.values():
+                label.setText("-")
+        if hasattr(self, "subnet_calc_result_hint"):
+            self.subnet_calc_result_hint.setText("계산하면 주요 요약과 상세 네트워크 정보가 아래에 정리됩니다.")
+        if hasattr(self, "subnet_calc_detail_table"):
+            self.subnet_calc_detail_table.setRowCount(0)
+
+    def _populate_subnet_calc_results(self, details: dict[str, str]) -> None:
+        self.subnet_calc_summary_labels["network_address"].setText(details["network_address"])
+        self.subnet_calc_summary_labels["host_range"].setText(details["host_range"])
+        self.subnet_calc_summary_labels["broadcast_address"].setText(details["broadcast_address"])
+        self.subnet_calc_summary_labels["usable_hosts"].setText(details["usable_hosts"])
+        self.subnet_calc_result_hint.setText("핵심 값은 위에 요약했고, 상세 값은 아래 표에서 바로 확인할 수 있습니다.")
+
+        rows = [
+            ("입력 IPv4", details["ip_address"]),
+            ("Prefix 길이", f"/{details['prefix_length']}"),
+            ("네트워크 주소", details["network_address"]),
+            ("서브넷 마스크", details["netmask"]),
+            ("와일드카드 마스크", details["wildcard_mask"]),
+            ("브로드캐스트 주소", details["broadcast_address"]),
+            ("사용 가능 호스트 범위", details["host_range"]),
+            ("첫 사용 가능 호스트", details["first_host"]),
+            ("마지막 사용 가능 호스트", details["last_host"]),
+            ("사용 가능 호스트 수", details["usable_hosts"]),
+            ("전체 주소 수", details["total_addresses"]),
+            ("주소 유형", details["address_scope"]),
+            ("비고", details["notes"]),
+        ]
+
+        self.subnet_calc_detail_table.setRowCount(len(rows))
+        for row, (label_text, value_text) in enumerate(rows):
+            label_item = QTableWidgetItem(label_text)
+            label_item.setForeground(QColor("#475467"))
+            label_item.setBackground(QColor("#f8fafc"))
+            value_item = QTableWidgetItem(value_text)
+            self.subnet_calc_detail_table.setItem(row, 0, label_item)
+            self.subnet_calc_detail_table.setItem(row, 1, value_item)
 
     def _build_log_panel(self, title: str, output: QPlainTextEdit) -> QWidget:
         panel = QWidget()
@@ -1032,15 +1222,106 @@ class DiagnosticsTab(QWidget):
             error_title="도구 실행 실패",
         )
 
+    def calculate_subnet_from_tools_inputs(self) -> None:
+        ip_text = self.subnet_calc_ip_edit.text().strip()
+        prefix_text = self.subnet_calc_prefix_edit.text().strip()
+
+        if not ip_text and not prefix_text:
+            self.subnet_calc_status_label.setText("IPv4와 Prefix를 입력하면 서브넷 정보를 계산합니다.")
+            self.subnet_calc_status_label.setStyleSheet("color:#666;")
+            self._clear_subnet_calc_results()
+            return
+
+        try:
+            details = calculate_subnet_details(ip_text, prefix_text)
+        except ValidationError as exc:
+            self.subnet_calc_status_label.setText(str(exc))
+            self.subnet_calc_status_label.setStyleSheet("color:#b71c1c;")
+            self._clear_subnet_calc_results()
+            return
+
+        self.subnet_calc_status_label.setText(
+            f"계산 완료: {details['address_scope']} | 네트워크 {details['network_address']} | 사용 가능 호스트 {details['usable_hosts']}"
+        )
+        self.subnet_calc_status_label.setStyleSheet("color:#1b5e20;")
+        self._populate_subnet_calc_results(details)
+
+    def refresh_subnet_calc_interfaces(self) -> None:
+        self.subnet_calc_status_label.setText("인터페이스 목록을 불러오는 중...")
+        self.subnet_calc_status_label.setStyleSheet("color:#666;")
+        self._start_worker(
+            self.state.network_interface_service.list_adapters,
+            on_result=self._populate_subnet_calc_interfaces,
+            error_title="인터페이스 목록 조회 실패",
+        )
+
+    def _populate_subnet_calc_interfaces(self, adapters) -> None:
+        current_ip = ""
+        current_prefix = ""
+        current_data = self.subnet_calc_interface_combo.currentData()
+        if isinstance(current_data, dict):
+            current_ip = str(current_data.get("ip", "") or "")
+            current_prefix = str(current_data.get("prefix", "") or "")
+
+        self.subnet_calc_interface_combo.clear()
+        candidates: list[dict[str, str]] = []
+        for adapter in adapters:
+            if not adapter.ipv4 or not adapter.prefix_length:
+                continue
+            if adapter.ipv4.startswith("127.") or adapter.ipv4.startswith("169.254."):
+                continue
+
+            description = (adapter.interface_description or "").strip()
+            if description and description.lower() != adapter.name.strip().lower():
+                interface_text = f"{adapter.name} ({description})"
+            else:
+                interface_text = adapter.name
+
+            subnet_text = f"{adapter.ipv4}/{adapter.prefix_length}"
+            payload = {
+                "ip": adapter.ipv4,
+                "prefix": str(adapter.prefix_length),
+                "subnet": subnet_text,
+            }
+            label = f"{interface_text} - {subnet_text}"
+            candidates.append(payload)
+            self.subnet_calc_interface_combo.addItem(label, payload)
+
+        if current_ip and current_prefix:
+            for index in range(self.subnet_calc_interface_combo.count()):
+                data = self.subnet_calc_interface_combo.itemData(index)
+                if isinstance(data, dict) and data.get("ip") == current_ip and str(data.get("prefix")) == current_prefix:
+                    self.subnet_calc_interface_combo.setCurrentIndex(index)
+                    break
+
+        if candidates:
+            self.subnet_calc_status_label.setText(f"사용 가능한 인터페이스 {len(candidates)}개를 찾았습니다.")
+            self.subnet_calc_status_label.setStyleSheet("color:#666;")
+        else:
+            self.subnet_calc_status_label.setText("사용 가능한 인터페이스를 찾지 못했습니다.")
+            self.subnet_calc_status_label.setStyleSheet("color:#b71c1c;")
+            self._clear_subnet_calc_results()
+
+    def use_selected_subnet_calc_interface(self) -> None:
+        data = self.subnet_calc_interface_combo.currentData()
+        if not isinstance(data, dict):
+            QMessageBox.warning(self, "선택 필요", "먼저 인터페이스 목록을 불러와 선택해 주세요.")
+            return
+
+        self.subnet_calc_ip_edit.setText(str(data.get("ip", "") or ""))
+        self.subnet_calc_prefix_edit.setText(str(data.get("prefix", "") or ""))
+        self.calculate_subnet_from_tools_inputs()
+
     def refresh_arp_subnets(self) -> None:
-        self.arp_output.setPlainText("활성 IPv4 서브넷을 확인하는 중...")
+        self.arp_output.setPlainText("인터페이스 목록과 서브넷 정보를 불러오는 중...")
         self._start_worker(
             self.state.network_interface_service.list_adapters,
             on_result=self._populate_arp_subnets,
-            error_title="활성 서브넷 조회 실패",
+            error_title="인터페이스 목록 조회 실패",
         )
 
     def _populate_arp_subnets(self, adapters) -> None:
+        self._populate_subnet_calc_interfaces(adapters)
         current_subnet = str(self.arp_subnet_combo.currentData() or "")
         candidates = self.state.arp_scan_service.list_candidate_subnets(adapters)
         self.arp_subnet_combo.clear()
@@ -1054,14 +1335,14 @@ class DiagnosticsTab(QWidget):
                 self.arp_subnet_combo.setCurrentIndex(index)
 
         if candidates:
-            self.arp_output.setPlainText(f"활성 서브넷 {len(candidates)}개를 찾았습니다.")
+            self.arp_output.setPlainText(f"사용 가능한 인터페이스 서브넷 {len(candidates)}개를 찾았습니다.")
         else:
-            self.arp_output.setPlainText("사용 가능한 활성 IPv4 서브넷을 찾지 못했습니다.")
+            self.arp_output.setPlainText("사용 가능한 인터페이스 서브넷을 찾지 못했습니다.")
 
     def use_selected_arp_subnet(self) -> None:
         subnet = str(self.arp_subnet_combo.currentData() or "").strip()
         if not subnet:
-            QMessageBox.warning(self, "선택 필요", "먼저 활성 서브넷 목록을 불러와 선택해 주세요.")
+            QMessageBox.warning(self, "선택 필요", "먼저 인터페이스 목록을 불러와 선택해 주세요.")
             return
         self.arp_subnet_edit.setText(subnet)
 
@@ -1076,6 +1357,7 @@ class DiagnosticsTab(QWidget):
         self.arp_table.setRowCount(0)
         self.arp_output.clear()
         self.arp_cancel_event = Event()
+        self._current_arp_scan_subnet = self.arp_subnet_edit.text().strip()
         self._set_arp_running(True)
         self._start_worker(
             self.state.arp_scan_service.run_scan,
@@ -1091,23 +1373,30 @@ class DiagnosticsTab(QWidget):
 
     def _finish_arp_scan(self, result: OperationResult) -> None:
         entries = result.payload if isinstance(result.payload, list) else []
-        self._populate_arp_table(entries)
+        detection_map, detection_lines = self._analyze_arp_entries(entries, self._current_arp_scan_subnet)
+        self._populate_arp_table(entries, detection_map)
         if self.arp_output.toPlainText().strip():
             self.arp_output.appendPlainText("")
             self.arp_output.appendPlainText(f"[결과] {result.message}")
         else:
             self.arp_output.setPlainText(result.message)
+        if detection_lines and (entries or result.success):
+            self.arp_output.appendPlainText("")
+            for line in detection_lines:
+                self.arp_output.appendPlainText(line)
 
-    def _populate_arp_table(self, entries: list[ArpScanEntry]) -> None:
+    def _populate_arp_table(self, entries: list[ArpScanEntry], detection_map: dict[str, tuple[str, QColor | None]]) -> None:
         self.arp_table.setRowCount(0)
         for entry in entries:
             row = self.arp_table.rowCount()
             self.arp_table.insertRow(row)
+            detection_text, detection_color = detection_map.get(entry.ip_address, ("정상", None))
             values = [
                 entry.ip_address,
                 entry.mac_address or "-",
                 entry.vendor or "-",
                 entry.status_text,
+                detection_text,
                 f"{entry.response_ms:.0f}" if entry.response_ms is not None else "-",
                 entry.arp_type or "-",
                 entry.interface_name or "-",
@@ -1121,7 +1410,87 @@ class DiagnosticsTab(QWidget):
                         item.setForeground(QColor("#ef6c00"))
                     else:
                         item.setForeground(QColor("#b71c1c"))
+                elif column == 4 and detection_color is not None:
+                    item.setForeground(detection_color)
                 self.arp_table.setItem(row, column, item)
+
+    def _analyze_arp_entries(
+        self,
+        entries: list[ArpScanEntry],
+        subnet_text: str,
+    ) -> tuple[dict[str, tuple[str, QColor | None]], list[str]]:
+        subnet_key = subnet_text.strip()
+        previous_map = self._arp_scan_history.get(subnet_key, {})
+        current_map: dict[str, str] = {}
+        mac_to_ips: dict[str, list[str]] = {}
+
+        for entry in entries:
+            normalized_mac = self._normalize_mac(entry.mac_address)
+            if not normalized_mac:
+                continue
+            current_map[entry.ip_address] = normalized_mac
+            mac_to_ips.setdefault(normalized_mac, []).append(entry.ip_address)
+
+        duplicate_mac_map = {
+            mac: sorted(ips, key=self._ip_sort_key)
+            for mac, ips in mac_to_ips.items()
+            if len(ips) > 1
+        }
+
+        changed_entries: list[tuple[str, str, str]] = []
+        detection_map: dict[str, tuple[str, QColor | None]] = {}
+        for entry in entries:
+            normalized_mac = self._normalize_mac(entry.mac_address)
+            labels: list[str] = []
+            color: QColor | None = None
+
+            previous_mac = previous_map.get(entry.ip_address, "")
+            if normalized_mac and previous_mac and previous_mac != normalized_mac:
+                labels.append("IP 충돌 의심")
+                color = QColor("#b71c1c")
+                changed_entries.append(
+                    (
+                        entry.ip_address,
+                        self._format_mac(previous_mac),
+                        self._format_mac(normalized_mac),
+                    )
+                )
+
+            duplicate_ips = duplicate_mac_map.get(normalized_mac, [])
+            if duplicate_ips:
+                labels.append(f"중복 MAC ({len(duplicate_ips)} IP)")
+                if color is None:
+                    color = QColor("#ef6c00")
+
+            detection_map[entry.ip_address] = (" / ".join(labels) if labels else "정상", color)
+
+        if subnet_key and current_map:
+            self._arp_scan_history[subnet_key] = current_map
+
+        output_lines: list[str] = []
+        if duplicate_mac_map:
+            output_lines.append(f"[감지] 중복 MAC {len(duplicate_mac_map)}건")
+            for mac, ips in sorted(duplicate_mac_map.items(), key=lambda item: self._ip_sort_key(item[1][0])):
+                output_lines.append(f"  - {self._format_mac(mac)} -> {', '.join(ips)}")
+        if changed_entries:
+            output_lines.append(f"[감지] IP 충돌 의심 {len(changed_entries)}건")
+            for ip_address, previous_mac, current_mac in sorted(changed_entries, key=lambda item: self._ip_sort_key(item[0])):
+                output_lines.append(f"  - {ip_address}: {previous_mac} -> {current_mac}")
+        if not output_lines:
+            output_lines.append("[감지] 특이사항 없음")
+        return detection_map, output_lines
+
+    def _normalize_mac(self, mac_address: str) -> str:
+        return re.sub(r"[^0-9A-Fa-f]", "", mac_address or "").upper()
+
+    def _format_mac(self, normalized_mac: str) -> str:
+        if len(normalized_mac) != 12:
+            return normalized_mac or "-"
+        return "-".join(normalized_mac[index : index + 2] for index in range(0, 12, 2))
+
+    def _ip_sort_key(self, ip_address: str) -> tuple[int, ...]:
+        parts = [int(part) for part in ip_address.split(".") if part.isdigit()]
+        return tuple(parts) if len(parts) == 4 else (999, 999, 999, 999)
 
     def _set_arp_running(self, running: bool) -> None:
         self.arp_start_button.setEnabled(not running)
@@ -1134,7 +1503,80 @@ class DiagnosticsTab(QWidget):
         if self.arp_cancel_event:
             self.arp_cancel_event.set()
 
-    def lookup_oui_vendor(self) -> None:
+    def _lookup_oui_vendor_legacy(self) -> None:
+        raw_text = self.oui_mac_edit.toPlainText().strip()
+        if not raw_text:
+            QMessageBox.warning(self, "?낅젰 ?뺤씤", "조회할 MAC 주소를 한 줄에 하나씩 입력해 주세요.")
+            return
+
+        entries = [
+            self.state.oui_service.split_label_and_mac(line)
+            for line in raw_text.splitlines()
+            if line.strip()
+        ]
+        if not entries:
+            QMessageBox.warning(self, "?낅젰 ?뺤씤", "조회할 MAC 주소를 한 줄에 하나씩 입력해 주세요.")
+            return
+
+        self.oui_table.setRowCount(0)
+        found_count = 0
+        invalid_count = 0
+        lines = [f"OUI 조회 {len(entries)}건", ""]
+
+        for index, (name, mac_address) in enumerate(entries, start=1):
+            normalized = self.state.oui_service.normalize_mac(mac_address)
+            match = self.state.oui_service.lookup(mac_address) if normalized else None
+
+            if not normalized:
+                judgment = "입력 형식 확인 필요"
+                vendor = "-"
+                invalid_count += 1
+            elif match is None:
+                judgment = "벤더 정보 없음"
+                vendor = "-"
+            else:
+                judgment = "벤더 확인됨"
+                vendor = match.organization
+                found_count += 1
+
+            row = self.oui_table.rowCount()
+            self.oui_table.insertRow(row)
+            values = [
+                name if name != mac_address else "-",
+                mac_address,
+                normalized or "-",
+                vendor,
+                judgment,
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 4:
+                    if judgment == "벤더 확인됨":
+                        item.setForeground(QColor("#1b5e20"))
+                    elif judgment == "입력 형식 확인 필요":
+                        item.setForeground(QColor("#b71c1c"))
+                    else:
+                        item.setForeground(QColor("#ef6c00"))
+                self.oui_table.setItem(row, column, item)
+
+            summary_name = name if name != mac_address else f"항목 {index}"
+            if judgment == "벤더 확인됨":
+                lines.append(f"[{index}] {summary_name}: {mac_address} -> {vendor}")
+            elif judgment == "입력 형식 확인 필요":
+                lines.append(f"[{index}] {summary_name}: {mac_address} -> 입력 형식 확인 필요")
+            else:
+                lines.append(f"[{index}] {summary_name}: {mac_address} -> 벤더 정보 없음")
+
+        lines.extend(
+            [
+                "",
+                f"일치 {found_count}건 | 미일치 {len(entries) - found_count - invalid_count}건 | 입력 오류 {invalid_count}건",
+                self.state.oui_service.cache_summary(),
+            ]
+        )
+        self.oui_result_output.setPlainText("\n".join(lines))
+        return
+
         mac_address = self.oui_mac_edit.text().strip()
         if not mac_address:
             QMessageBox.warning(self, "입력 확인", "조회할 MAC 주소를 입력해 주세요.")
@@ -1169,6 +1611,80 @@ class DiagnosticsTab(QWidget):
                 ]
             )
         )
+
+    def lookup_oui_vendor(self) -> None:
+        raw_text = self.oui_mac_edit.toPlainText().strip()
+        if not raw_text:
+            QMessageBox.warning(self, "입력 확인", "조회할 MAC 주소를 한 줄에 하나씩 입력해 주세요.")
+            return
+
+        entries = [
+            self.state.oui_service.split_label_and_mac(line)
+            for line in raw_text.splitlines()
+            if line.strip()
+        ]
+        if not entries:
+            QMessageBox.warning(self, "입력 확인", "조회할 MAC 주소를 한 줄에 하나씩 입력해 주세요.")
+            return
+
+        self.oui_table.setRowCount(0)
+        found_count = 0
+        invalid_count = 0
+        lines = [f"OUI 조회 {len(entries)}건", ""]
+
+        for index, (name, mac_address) in enumerate(entries, start=1):
+            normalized = self.state.oui_service.normalize_mac(mac_address)
+            match = self.state.oui_service.lookup(mac_address) if normalized else None
+
+            if not normalized:
+                judgment = "입력 형식 확인 필요"
+                vendor = "-"
+                invalid_count += 1
+            elif match is None:
+                judgment = "벤더 정보 없음"
+                vendor = "-"
+            else:
+                judgment = "벤더 확인됨"
+                vendor = match.organization
+                found_count += 1
+
+            row = self.oui_table.rowCount()
+            self.oui_table.insertRow(row)
+            values = [
+                name if name != mac_address else "-",
+                mac_address,
+                normalized or "-",
+                vendor,
+                judgment,
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 4:
+                    if judgment == "벤더 확인됨":
+                        item.setForeground(QColor("#1b5e20"))
+                    elif judgment == "입력 형식 확인 필요":
+                        item.setForeground(QColor("#b71c1c"))
+                    else:
+                        item.setForeground(QColor("#ef6c00"))
+                self.oui_table.setItem(row, column, item)
+
+            summary_name = name if name != mac_address else f"항목 {index}"
+            if judgment == "벤더 확인됨":
+                lines.append(f"[{index}] {summary_name}: {mac_address} -> {vendor}")
+            elif judgment == "입력 형식 확인 필요":
+                lines.append(f"[{index}] {summary_name}: {mac_address} -> 입력 형식 확인 필요")
+            else:
+                lines.append(f"[{index}] {summary_name}: {mac_address} -> 벤더 정보 없음")
+
+        mismatch_count = len(entries) - found_count - invalid_count
+        lines.extend(
+            [
+                "",
+                f"일치 {found_count}건 | 미일치 {mismatch_count}건 | 입력 오류 {invalid_count}건",
+                self.state.oui_service.cache_summary(),
+            ]
+        )
+        self.oui_result_output.setPlainText("\n".join(lines))
 
     def refresh_oui_cache(self, output_widget: QPlainTextEdit) -> None:
         output_widget.clear()
@@ -1781,11 +2297,14 @@ class DiagnosticsTab(QWidget):
         return {
             "current_tab": self.tab_widget.currentIndex(),
             "tools": {
+                "version": 2,
                 "current_subtab": self.tools_inner_tab.currentIndex(),
+                "subnet_ip": self.subnet_calc_ip_edit.text().strip(),
+                "subnet_prefix": self.subnet_calc_prefix_edit.text().strip(),
                 "arp_subnet": self.arp_subnet_edit.text().strip(),
                 "arp_timeout_ms": self.arp_timeout_edit.text().strip(),
                 "arp_workers": self.arp_workers_edit.text().strip(),
-                "oui_mac": self.oui_mac_edit.text().strip(),
+                "oui_targets": self.oui_mac_edit.toPlainText().strip(),
             },
             "ping": {
                 "targets": self.ping_targets_edit.toPlainText(),
@@ -1836,13 +2355,21 @@ class DiagnosticsTab(QWidget):
             self.tab_widget.setCurrentIndex(current_tab)
 
         tools_state = state.get("tools", {})
+        tools_version = int(tools_state.get("version", 1) or 1)
         tools_subtab = int(tools_state.get("current_subtab", 0) or 0)
+        if tools_version < 2 and tools_subtab >= 2:
+            tools_subtab += 1
         if 0 <= tools_subtab < self.tools_inner_tab.count():
             self.tools_inner_tab.setCurrentIndex(tools_subtab)
+        self.subnet_calc_ip_edit.setText(str(tools_state.get("subnet_ip", "") or ""))
+        self.subnet_calc_prefix_edit.setText(str(tools_state.get("subnet_prefix", "") or ""))
         self.arp_subnet_edit.setText(str(tools_state.get("arp_subnet", "") or ""))
         self.arp_timeout_edit.setText(str(tools_state.get("arp_timeout_ms", "") or ""))
         self.arp_workers_edit.setText(str(tools_state.get("arp_workers", "") or ""))
-        self.oui_mac_edit.setText(str(tools_state.get("oui_mac", "") or ""))
+        self.oui_mac_edit.setPlainText(
+            str(tools_state.get("oui_targets", tools_state.get("oui_mac", "")) or "")
+        )
+        self.calculate_subnet_from_tools_inputs()
 
         ping_state = state.get("ping", {})
         self.ping_targets_edit.setPlainText(str(ping_state.get("targets", "") or ""))

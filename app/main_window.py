@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab(self.state)
 
         self.tab_widget.addTab(self.interface_tab, "인터페이스")
-        self.tab_widget.addTab(self.diagnostics_tab, "진단")
+        self.tab_widget.addTab(self.diagnostics_tab, "네트워크")
         self.tab_widget.addTab(self.wireless_tab, "무선 상태")
         self.tab_widget.addTab(self.settings_tab, "설정")
         self.setCentralWidget(self.tab_widget)

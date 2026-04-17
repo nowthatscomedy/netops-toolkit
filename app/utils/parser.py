@@ -74,30 +74,40 @@ def _normalize_label(label: str) -> str:
 INTERFACE_FIELD_MAP: dict[str, str] = {
     "name": "interface_name",
     "이름": "interface_name",
+    "이름": "interface_name",
     "description": "description",
+    "설명": "description",
     "설명": "description",
     "state": "state",
     "status": "state",
     "상태": "state",
+    "상태": "state",
     "ssid": "ssid",
     "bssid": "bssid",
+    "apbssid": "bssid",
     "radiotype": "radio_type",
     "라디오타입": "radio_type",
     "무선규격": "radio_type",
     "phytype": "radio_type",
+    "송수신장치종류": "radio_type",
     "물리유형": "radio_type",
     "channel": "channel",
     "채널": "channel",
+    "채널": "channel",
     "band": "band",
+    "밴드": "band",
     "대역": "band",
     "signal": "signal",
+    "신호": "signal",
     "신호": "signal",
     "receiveratembps": "receive_rate_mbps",
     "receiverate": "receive_rate_mbps",
     "수신속도mbps": "receive_rate_mbps",
+    "수신속도mbps": "receive_rate_mbps",
     "수신속도": "receive_rate_mbps",
     "transmitratembps": "transmit_rate_mbps",
     "transmitrate": "transmit_rate_mbps",
+    "전송속도mbps": "transmit_rate_mbps",
     "송신속도mbps": "transmit_rate_mbps",
     "송신속도": "transmit_rate_mbps",
     "rssi": "rssi",
@@ -118,10 +128,13 @@ STATE_MAP = {
 
 NEARBY_SSID_FIELD_MAP: dict[str, str] = {
     "networktype": "network_type",
+    "네트워크종류": "network_type",
     "네트워크유형": "network_type",
     "authentication": "authentication",
     "인증": "authentication",
+    "인증": "authentication",
     "encryption": "encryption",
+    "암호화": "encryption",
     "암호화": "encryption",
 }
 
@@ -129,14 +142,18 @@ NEARBY_SSID_FIELD_MAP: dict[str, str] = {
 NEARBY_AP_FIELD_MAP: dict[str, str] = {
     "signal": "signal_percent",
     "신호": "signal_percent",
+    "신호": "signal_percent",
     "radiotype": "radio_standard",
     "라디오타입": "radio_standard",
     "무선규격": "radio_standard",
     "phytype": "radio_standard",
+    "무선송수신장치유형": "radio_standard",
     "물리유형": "radio_standard",
     "band": "band",
+    "밴드": "band",
     "대역": "band",
     "channel": "channel",
+    "채널": "channel",
     "채널": "channel",
 }
 
@@ -309,6 +326,16 @@ def parse_netsh_wlan_networks_output(raw_output: str) -> list[NearbyAccessPoint]
             current_ap.band = text_value
         elif field_name == "channel":
             current_ap.channel = text_value
+        elif normalized_label == "연결되는스테이션":
+            match = re.search(r"\d+", text_value)
+            current_ap.connected_stations = int(match.group(0)) if match else None
+        elif normalized_label == "채널사용률":
+            percent_match = re.search(r"\((\d+)\s*%\)", text_value)
+            if percent_match:
+                current_ap.channel_utilization_percent = int(percent_match.group(1))
+            else:
+                match = re.search(r"\d+", text_value)
+                current_ap.channel_utilization_percent = int(match.group(0)) if match else None
         elif normalized_label in {"connectedstations", "연결된스테이션"}:
             match = re.search(r"\d+", text_value)
             current_ap.connected_stations = int(match.group(0)) if match else None

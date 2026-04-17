@@ -31,7 +31,12 @@ class ArpScanService:
                 network = ipaddress.ip_network(f"{adapter.ipv4}/{adapter.prefix_length}", strict=False)
             except ValueError:
                 continue
-            label = f"{adapter.name} - {network.with_prefixlen}"
+            description = (adapter.interface_description or "").strip()
+            if description and description.lower() != adapter.name.strip().lower():
+                interface_text = f"{adapter.name} ({description})"
+            else:
+                interface_text = adapter.name
+            label = f"{interface_text} - {network.with_prefixlen}"
             candidates.append((label, network.with_prefixlen))
         return candidates
 

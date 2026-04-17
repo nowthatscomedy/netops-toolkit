@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import re
 from dataclasses import asdict
 from datetime import datetime
 from io import StringIO
@@ -15,6 +16,19 @@ from app.utils.file_utils import AppPaths, save_json
 
 
 class OuiService:
+    MAC_FRAGMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+        re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}(?:[:\-\.\s][0-9a-f]{2}){2,7})(?![0-9a-f])"),
+        re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{4}(?:[:\-\.\s][0-9a-f]{4}){1,2})(?![0-9a-f])"),
+        re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{6,12}(?![0-9a-f])"),
+    )
+    LABEL_ONLY_RE = re.compile(
+        r"(?i)^(?:"
+        r"mac(?:\s*address)?|mac\s*주소|"
+        r"physical\s*address|wireless\s*address|"
+        r"bssid|oui|address|addr|"
+        r"물리적\s*주소|무선\s*주소|주소"
+        r")\s*[:=\-]?\s*$"
+    )
     IEEE_SOURCES: tuple[tuple[str, str], ...] = (
         ("MA-L", "https://standards-oui.ieee.org/oui/oui.csv"),
         ("MA-M", "https://standards-oui.ieee.org/oui28/mam.csv"),
@@ -163,9 +177,41 @@ class OuiService:
             )
         return records
 
-    @staticmethod
-    def normalize_mac(mac_address: str) -> str:
-        text = "".join(ch for ch in mac_address.upper() if ch in "0123456789ABCDEF")
+    @classmethod
+    def extract_mac_fragment(cls, mac_address: str) -> str:
+        text = str(mac_address or "").strip()
+        if not text:
+            return ""
+        for pattern in cls.MAC_FRAGMENT_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                return match.group(0).strip()
+        return ""
+
+    @classmethod
+    def split_label_and_mac(cls, value: str) -> tuple[str, str]:
+        text = str(value or "").strip()
+        if not text:
+            return "", ""
+
+        if "," in text:
+            name, candidate = [part.strip() for part in text.split(",", 1)]
+            fragment = cls.extract_mac_fragment(candidate) or candidate
+            return name or fragment, fragment
+
+        fragment = cls.extract_mac_fragment(text)
+        if not fragment:
+            return text, text
+
+        label = text.replace(fragment, " ", 1).strip(" -:|/[]()")
+        if not label or cls.LABEL_ONLY_RE.match(label):
+            label = fragment
+        return label, fragment
+
+    @classmethod
+    def normalize_mac(cls, mac_address: str) -> str:
+        fragment = cls.extract_mac_fragment(mac_address)
+        text = "".join(ch for ch in fragment.upper() if ch in "0123456789ABCDEF")
         if len(text) < 6:
             return ""
         return text
