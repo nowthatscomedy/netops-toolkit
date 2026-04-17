@@ -153,7 +153,8 @@ This repository now includes a repeatable Windows installer pipeline:
 - [scripts/publish_release.ps1](/C:/Users/PC/Desktop/python/netops-toolkit/scripts/publish_release.ps1)
   - Creates or updates a GitHub Release and uploads the installer asset
 - [.github/workflows/release.yml](/C:/Users/PC/Desktop/python/netops-toolkit/.github/workflows/release.yml)
-  - On `v*` tags, builds the installer and publishes it to GitHub Releases
+  - On `main` pushes, reads `app/version.py` and automatically publishes the matching release if it does not exist yet
+  - Also supports manual `workflow_dispatch` runs from GitHub Actions as a fallback
 
 Local build example:
 
@@ -194,15 +195,15 @@ Recommended release flow for this repository:
 
 1. Update [app/version.py](/C:/Users/PC/Desktop/python/netops-toolkit/app/version.py) to the target version.
 2. Commit and push the change.
-3. Create and push a tag such as `v1.0.2`.
-4. GitHub Actions builds `NetOpsToolkit-setup-1.0.2.exe`.
-5. The workflow uploads the installer to the GitHub Release for that tag.
+3. Push the version bump to `main`.
+4. GitHub Actions reads the version, creates `v1.0.2`, and builds `NetOpsToolkit-setup-1.0.2.exe`.
+5. The workflow uploads the installer to the matching GitHub Release automatically.
 
-Tag push example:
+Manual fallback:
 
 ```powershell
-git tag v1.0.2
-git push origin v1.0.2
+# If you need to rerun or publish manually, use
+# Actions > Build And Release > Run workflow
 ```
 
 Current limitations:
