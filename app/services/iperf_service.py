@@ -333,6 +333,8 @@ class IperfService:
         streams: int,
         duration: int,
         reverse: bool = False,
+        udp: bool = False,
+        ipv6: bool = False,
         progress_callback=None,
         cancel_event=None,
     ) -> OperationResult:
@@ -354,6 +356,8 @@ class IperfService:
         mode = mode.strip().lower()
         if mode == "server":
             command = [executable, "-s", "-p", str(port), "--forceflush"]
+            if ipv6:
+                command.append("-6")
             timeout = 86400
         else:
             if not server.strip():
@@ -372,6 +376,10 @@ class IperfService:
             ]
             if reverse:
                 command.append("-R")
+            if udp:
+                command.append("-u")
+            if ipv6:
+                command.append("-6")
             timeout = max(duration + 30, 60)
 
         self.logger.info("Starting iperf3 %s mode using %s", mode, executable)

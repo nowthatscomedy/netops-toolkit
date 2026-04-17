@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 
 
 @dataclass(slots=True)
@@ -93,7 +94,14 @@ class PublicIperfServer:
     def display_name(self) -> str:
         location = self.site or self.name or self.host
         country = f" ({self.country_code})" if self.country_code and self.country_code not in location else ""
-        return f"{location}{country} - {self.host}:{self.port_spec}"
+        parts = [f"{location}{country} - {self.host}:{self.port_spec}"]
+        if self.region:
+            parts.append(self.region)
+        if self.speed:
+            parts.append(f"{self.speed} Gb/s")
+        if self.options:
+            parts.append(self.options)
+        return " | ".join(parts)
 
     @property
     def summary_text(self) -> str:
@@ -109,6 +117,25 @@ class PublicIperfServer:
         if self.notes:
             parts.append(self.notes)
         return " | ".join(part for part in parts if part)
+
+    @property
+    def option_tokens(self) -> set[str]:
+        raw = self.options.strip().lower()
+        if not raw:
+            return set()
+        return {token.strip() for token in re.findall(r"(?:-[a-z0-9]+|ipv6-only|ipv6|udp|reverse)", raw) if token.strip()}
+
+    def supports_option(self, flag: str) -> bool:
+        normalized = flag.strip().lower()
+        if not normalized:
+            return False
+        tokens = self.option_tokens
+        aliases = {
+            "-r": {"-r", "reverse"},
+            "-u": {"-u", "udp"},
+            "-6": {"-6", "ipv6", "ipv6-only"},
+        }.get(normalized, {normalized})
+        return any(alias in tokens for alias in aliases)
 
     def to_dict(self) -> dict:
         return {
