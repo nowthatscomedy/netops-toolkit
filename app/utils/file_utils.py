@@ -25,6 +25,7 @@ class AppPaths:
     vendor_presets: Path
     wifi_profiles: Path
     public_iperf_cache: Path
+    oui_cache: Path
     app_log: Path
 
 
@@ -32,6 +33,10 @@ def detect_root_path() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
+
+
+def resolve_asset_path(*parts: str) -> Path:
+    return detect_root_path() / "assets" / Path(*parts)
 
 
 def default_data_root() -> Path:
@@ -93,6 +98,7 @@ def build_app_paths(root_dir: Path | None = None) -> AppPaths:
         vendor_presets=config_dir / "vendor_presets.json",
         wifi_profiles=config_dir / "wifi_profiles.json",
         public_iperf_cache=config_dir / "public_iperf_servers_cache.json",
+        oui_cache=config_dir / "oui_cache.json",
         app_log=logs_dir / "app.log",
     )
 

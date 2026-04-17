@@ -18,13 +18,16 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app.app_state import AppState
-from app.models.network_models import WirelessInfo
+from app.models.network_models import NearbyAccessPoint, WirelessInfo
 from app.models.profile_models import WifiAdvancedProfile
+from app.utils.parser import summarize_channels
 from app.utils.threading_utils import FunctionWorker
 
 
@@ -34,6 +37,7 @@ class WirelessTab(QWidget):
         self.state = state
         self._active_workers: list[FunctionWorker] = []
         self.previous_info: WirelessInfo | None = None
+        self.nearby_access_points: list[NearbyAccessPoint] = []
         self._pending_adapter_name = ""
         self._pending_profile_name = ""
         self.timer = QTimer(self)
@@ -44,6 +48,7 @@ class WirelessTab(QWidget):
         self.state.config_reloaded.connect(self._reload_wifi_profiles)
         self._reload_wifi_profiles()
         self.refresh_wireless_info()
+        self.refresh_nearby_access_points()
         self.load_wireless_adapters()
 
     def _build_ui(self) -> None:
@@ -105,6 +110,32 @@ class WirelessTab(QWidget):
         change_layout.addWidget(self.change_log)
         top_row.addWidget(change_group, 1)
 
+        nearby_group = QGroupBox("주변 AP / 채널 현황")
+        nearby_layout = QVBoxLayout(nearby_group)
+        nearby_controls = QHBoxLayout()
+        self.nearby_refresh_button = QPushButton("주변 AP 새로고침")
+        self.nearby_refresh_oui_button = QPushButton("OUI 캐시 갱신")
+        self.nearby_summary_label = QLabel("스캔 전")
+        self.nearby_summary_label.setStyleSheet("color:#666;")
+        nearby_controls.addWidget(self.nearby_refresh_button)
+        nearby_controls.addWidget(self.nearby_refresh_oui_button)
+        nearby_controls.addStretch(1)
+        nearby_controls.addWidget(self.nearby_summary_label, 2)
+        nearby_layout.addLayout(nearby_controls)
+
+        self.nearby_table = QTableWidget(0, 10)
+        self.nearby_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.nearby_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.nearby_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.nearby_table.setAlternatingRowColors(True)
+        self.nearby_table.setHorizontalHeaderLabels(
+            ["SSID", "BSSID", "벤더", "신호", "무선 규격", "대역", "채널", "보안", "채널 사용률", "연결 단말"]
+        )
+        self.nearby_table.verticalHeader().setVisible(False)
+        self.nearby_table.horizontalHeader().setStretchLastSection(True)
+        nearby_layout.addWidget(self.nearby_table, 1)
+        layout.addWidget(nearby_group, 1)
+
         bottom_group = QGroupBox("Wi-Fi 고급 설정 프로필")
         bottom_layout = QFormLayout(bottom_group)
         self.adapter_combo = QComboBox()
@@ -135,6 +166,8 @@ class WirelessTab(QWidget):
         self.refresh_button.clicked.connect(self.refresh_wireless_info)
         self.auto_refresh_check.toggled.connect(self._toggle_auto_refresh)
         self.interval_spin.valueChanged.connect(self._handle_interval_change)
+        self.nearby_refresh_button.clicked.connect(self.refresh_nearby_access_points)
+        self.nearby_refresh_oui_button.clicked.connect(self.refresh_nearby_oui_cache)
         self.refresh_adapters_button.clicked.connect(self.load_wireless_adapters)
         self.load_properties_button.clicked.connect(self.load_adapter_properties)
         self.apply_profile_button.clicked.connect(self.apply_wifi_profile)
@@ -164,6 +197,22 @@ class WirelessTab(QWidget):
             error_title="무선 상태 조회 실패",
         )
 
+    def refresh_nearby_access_points(self) -> None:
+        self.nearby_summary_label.setText("주변 AP를 스캔하는 중...")
+        self._start_worker(
+            self.state.wireless_service.scan_nearby_access_points,
+            on_result=self._update_nearby_access_points,
+            error_title="주변 AP 조회 실패",
+        )
+
+    def refresh_nearby_oui_cache(self) -> None:
+        self.nearby_summary_label.setText("OUI 캐시를 갱신하는 중...")
+        self._start_worker(
+            self.state.oui_service.refresh_cache,
+            on_result=self._finish_nearby_oui_refresh,
+            error_title="OUI 캐시 갱신 실패",
+        )
+
     def _update_wireless_view(self, info: WirelessInfo) -> None:
         self.info_labels["interface_name"].setText(info.interface_name or info.description or "-")
         self.info_labels["interface_name"].setToolTip(info.description or info.interface_name or "")
@@ -182,6 +231,52 @@ class WirelessTab(QWidget):
         self.info_labels["state"].setStyleSheet(f"color:{state_color}; font-weight:bold;")
         self._log_wireless_changes(info)
         self.previous_info = info
+
+    def _update_nearby_access_points(self, access_points: list[NearbyAccessPoint]) -> None:
+        self.nearby_access_points = access_points
+        self.nearby_table.setRowCount(0)
+
+        for access_point in access_points:
+            row = self.nearby_table.rowCount()
+            self.nearby_table.insertRow(row)
+            security = " / ".join(part for part in [access_point.authentication, access_point.encryption] if part) or "-"
+            values = [
+                access_point.ssid or "-",
+                access_point.bssid or "-",
+                access_point.vendor or "-",
+                access_point.signal_text,
+                access_point.radio_standard or "-",
+                access_point.band or "-",
+                access_point.channel or "-",
+                security,
+                (
+                    f"{access_point.channel_utilization_percent}%"
+                    if access_point.channel_utilization_percent is not None
+                    else "-"
+                ),
+                str(access_point.connected_stations) if access_point.connected_stations is not None else "-",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 3 and access_point.signal_percent is not None:
+                    if access_point.signal_percent >= 70:
+                        item.setForeground(QColor("#1b5e20"))
+                    elif access_point.signal_percent >= 40:
+                        item.setForeground(QColor("#ef6c00"))
+                    else:
+                        item.setForeground(QColor("#b71c1c"))
+                self.nearby_table.setItem(row, column, item)
+
+        summary = summarize_channels(access_points)
+        count_text = f"AP {len(access_points)}개"
+        cache_text = self.state.oui_service.cache_summary()
+        self.nearby_summary_label.setText(f"{count_text} | {summary} | {cache_text}")
+
+    def _finish_nearby_oui_refresh(self, result) -> None:
+        if result.success:
+            self.refresh_nearby_access_points()
+            return
+        self.nearby_summary_label.setText(result.message)
 
     def _log_wireless_changes(self, current: WirelessInfo) -> None:
         if not self.previous_info:

@@ -66,8 +66,10 @@ $pyInstallerArgs = @(
     "--clean",
     "--windowed",
     "--name", "NetOpsToolkit",
+    "--icon", (Join-Path $repoRoot "assets\icons\netops_toolkit.ico"),
     "--add-data", "$stagingConfigDir;config",
     "--add-data", "$stagingLogsDir;logs",
+    "--add-data", (Join-Path $repoRoot "assets\icons") + ";assets\\icons",
     "main.py"
 )
 

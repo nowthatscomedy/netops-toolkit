@@ -26,6 +26,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=..\assets\icons\netops_toolkit.ico
 UninstallDisplayIcon={app}\NetOpsToolkit.exe
 
 [Tasks]

@@ -72,6 +72,76 @@ class WirelessInfo:
 
 
 @dataclass(slots=True)
+class NearbyAccessPoint:
+    interface_name: str = ""
+    ssid: str = ""
+    bssid: str = ""
+    vendor: str = ""
+    network_type: str = ""
+    authentication: str = ""
+    encryption: str = ""
+    radio_standard: str = ""
+    band: str = ""
+    channel: str = ""
+    signal_percent: int | None = None
+    connected_stations: int | None = None
+    channel_utilization_percent: int | None = None
+    raw_block: str = ""
+
+    @property
+    def signal_text(self) -> str:
+        if self.signal_percent is None:
+            return "-"
+        return f"{self.signal_percent}%"
+
+
+@dataclass(slots=True)
+class ArpScanEntry:
+    ip_address: str
+    mac_address: str = ""
+    vendor: str = ""
+    hostname: str = ""
+    interface_name: str = ""
+    arp_type: str = ""
+    reachable: bool = False
+    response_ms: float | None = None
+
+    @property
+    def status_text(self) -> str:
+        if self.reachable:
+            return "응답"
+        if self.mac_address:
+            return "ARP 발견"
+        return "미발견"
+
+
+@dataclass(slots=True)
+class TraceHop:
+    hop_number: int
+    probe_1: str = ""
+    probe_2: str = ""
+    probe_3: str = ""
+    average_ms: float | None = None
+    address: str = ""
+    hostname: str = ""
+    status: str = ""
+
+    @property
+    def endpoint_text(self) -> str:
+        if self.hostname and self.address and self.hostname != self.address:
+            return f"{self.hostname} ({self.address})"
+        return self.hostname or self.address or "-"
+
+
+@dataclass(slots=True)
+class OuiRecord:
+    prefix: str
+    prefix_bits: int
+    organization: str
+    registry: str
+
+
+@dataclass(slots=True)
 class PublicIperfServer:
     name: str
     host: str

@@ -17,6 +17,7 @@ logs/exports/*
 
 config/app_config.json
 config/public_iperf_servers_cache.json
+config/oui_cache.json
 
 iperf3.exe
 cygcrypto-3.dll

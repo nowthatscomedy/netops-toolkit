@@ -33,9 +33,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.app_state import AppState
-from app.models.network_models import PublicIperfServer
+from app.models.network_models import ArpScanEntry, PublicIperfServer, TraceHop
 from app.models.result_models import OperationResult, PingResult, TcpCheckResult
 from app.utils.file_utils import timestamped_export_path
+from app.utils.parser import parse_trace_hop_line, parse_trace_hops
 from app.utils.threading_utils import FunctionWorker
 from app.utils.validators import ValidationError, parse_positive_int, validate_host_input
 
@@ -79,11 +80,14 @@ class DiagnosticsTab(QWidget):
         self.ping_cancel_event: Event | None = None
         self.tcp_cancel_event: Event | None = None
         self.trace_cancel_event: Event | None = None
+        self.arp_cancel_event: Event | None = None
         self.iperf_cancel_event: Event | None = None
         self.iperf_manage_cancel_event: Event | None = None
 
         self.ping_row_map: dict[tuple[str, str], int] = {}
         self.tcp_row_map: dict[tuple[str, str, int], int] = {}
+        self.trace_row_map: dict[int, int] = {}
+        self.arp_subnet_candidates: list[str] = []
         self.ping_log_lines: dict[tuple[str, str], list[str]] = {}
         self.tcp_log_lines: dict[tuple[str, str, int], list[str]] = {}
         self._iperf_available = False
@@ -100,6 +104,7 @@ class DiagnosticsTab(QWidget):
 
         self.fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self._build_ui()
+        self.refresh_arp_subnets()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -283,6 +288,11 @@ class DiagnosticsTab(QWidget):
 
         self.trace_status_label = QLabel("준비")
         layout.addWidget(self.trace_status_label)
+        self.trace_table = QTableWidget(0, 7)
+        self.trace_table.setHorizontalHeaderLabels(["Hop", "RTT1", "RTT2", "RTT3", "평균(ms)", "목적지", "상태"])
+        self._setup_table(self.trace_table)
+        self.trace_table.setMaximumHeight(220)
+        layout.addWidget(self.trace_table)
         self.trace_output = self._output()
         layout.addWidget(self.trace_output, 1)
 
@@ -292,6 +302,18 @@ class DiagnosticsTab(QWidget):
         return page
 
     def _build_tools_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        self.tools_inner_tab = QTabWidget()
+        self.tools_inner_tab.addTab(self._build_command_tools_page(), "명령 출력")
+        self.tools_inner_tab.addTab(self._build_arp_scan_page(), "ARP 스캔")
+        self.tools_inner_tab.addTab(self._build_oui_lookup_page(), "MAC OUI")
+        layout.addWidget(self.tools_inner_tab, 1)
+
+        self._refresh_oui_status_labels()
+        return page
+
+    def _build_command_tools_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
 
@@ -322,6 +344,95 @@ class DiagnosticsTab(QWidget):
         self.flush_dns_button.clicked.connect(
             lambda: self._run_tools_command(self.state.dns_service.flush_dns_cache)
         )
+        return page
+
+    def _build_arp_scan_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        group = QGroupBox("ARP 스캔 / 같은 대역 장비 탐색")
+        form = QFormLayout(group)
+        self.arp_subnet_edit = QLineEdit()
+        self.arp_subnet_edit.setPlaceholderText("예: 192.168.0.0/24")
+        self.arp_subnet_combo = QComboBox()
+        self.arp_subnet_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.arp_refresh_subnets_button = QPushButton("인터페이스 기준 불러오기")
+        self.arp_use_selected_subnet_button = QPushButton("선택값 입력")
+        self.arp_timeout_edit = QLineEdit()
+        self.arp_timeout_edit.setPlaceholderText("800")
+        self.arp_workers_edit = QLineEdit()
+        self.arp_workers_edit.setPlaceholderText("64")
+        self.arp_start_button = QPushButton("스캔")
+        self.arp_cancel_button = QPushButton("중지")
+        self.arp_cancel_button.setEnabled(False)
+        self.arp_refresh_oui_button = QPushButton("OUI 캐시 갱신")
+        self.arp_oui_status_label = QLabel()
+        self.arp_oui_status_label.setStyleSheet("color:#666;")
+
+        subnet_button_row = QHBoxLayout()
+        subnet_button_row.addWidget(self.arp_subnet_combo, 1)
+        subnet_button_row.addWidget(self.arp_refresh_subnets_button)
+        subnet_button_row.addWidget(self.arp_use_selected_subnet_button)
+
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.arp_start_button)
+        action_row.addWidget(self.arp_cancel_button)
+        action_row.addSpacing(8)
+        action_row.addWidget(self.arp_refresh_oui_button)
+        action_row.addStretch(1)
+
+        form.addRow("서브넷", self.arp_subnet_edit)
+        form.addRow("활성 서브넷", subnet_button_row)
+        form.addRow("Timeout (ms)", self.arp_timeout_edit)
+        form.addRow("동시 실행 수", self.arp_workers_edit)
+        form.addRow("", action_row)
+        form.addRow("OUI 캐시", self.arp_oui_status_label)
+        layout.addWidget(group)
+
+        self.arp_table = QTableWidget(0, 7)
+        self.arp_table.setHorizontalHeaderLabels(["IP", "MAC", "벤더", "상태", "응답(ms)", "ARP 타입", "인터페이스"])
+        self._setup_table(self.arp_table)
+        layout.addWidget(self.arp_table, 1)
+
+        self.arp_output = self._output()
+        self.arp_output.setMaximumHeight(150)
+        layout.addWidget(self.arp_output)
+
+        self.arp_refresh_subnets_button.clicked.connect(self.refresh_arp_subnets)
+        self.arp_use_selected_subnet_button.clicked.connect(self.use_selected_arp_subnet)
+        self.arp_start_button.clicked.connect(self.start_arp_scan)
+        self.arp_cancel_button.clicked.connect(self.cancel_arp_scan)
+        self.arp_refresh_oui_button.clicked.connect(lambda: self.refresh_oui_cache(self.arp_output))
+        return page
+
+    def _build_oui_lookup_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        group = QGroupBox("MAC OUI 벤더 조회")
+        form = QFormLayout(group)
+        self.oui_mac_edit = QLineEdit()
+        self.oui_mac_edit.setPlaceholderText("예: 58:86:94:A1:5A:BA")
+        self.oui_lookup_button = QPushButton("조회")
+        self.oui_refresh_button = QPushButton("IEEE 캐시 갱신")
+        self.oui_status_label = QLabel()
+        self.oui_status_label.setStyleSheet("color:#666;")
+
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.oui_lookup_button)
+        action_row.addWidget(self.oui_refresh_button)
+        action_row.addStretch(1)
+
+        form.addRow("MAC 주소", self.oui_mac_edit)
+        form.addRow("", action_row)
+        form.addRow("캐시 상태", self.oui_status_label)
+        layout.addWidget(group)
+
+        self.oui_result_output = self._output()
+        layout.addWidget(self.oui_result_output, 1)
+
+        self.oui_lookup_button.clicked.connect(self.lookup_oui_vendor)
+        self.oui_refresh_button.clicked.connect(lambda: self.refresh_oui_cache(self.oui_result_output))
         return page
 
     def _build_iperf_tab(self) -> QWidget:
@@ -836,6 +947,8 @@ class DiagnosticsTab(QWidget):
             return
 
         self.trace_output.clear()
+        self.trace_table.setRowCount(0)
+        self.trace_row_map.clear()
         self.trace_status_label.setText(f"{mode} 실행 중...")
         self.trace_cancel_event = Event()
         self._set_trace_running(True)
@@ -846,16 +959,24 @@ class DiagnosticsTab(QWidget):
             target,
             not self.trace_no_resolve_check.isChecked(),
             cancel_event=self.trace_cancel_event,
-            on_progress=self.trace_output.appendPlainText,
+            on_progress=self._handle_trace_progress,
             on_result=lambda result, mode=mode: self._finish_trace(mode, result),
             on_finished=lambda: self._set_trace_running(False),
             error_title=f"{mode} 실행 실패",
         )
 
+    def _handle_trace_progress(self, line: str) -> None:
+        self.trace_output.appendPlainText(line)
+        hop = parse_trace_hop_line(line)
+        if hop is not None:
+            self._upsert_trace_hop(hop)
+
     def _finish_trace(self, mode: str, result: OperationResult) -> None:
         self.trace_status_label.setText(f"{mode}: {result.message}")
         if result.details and not self.trace_output.toPlainText().strip():
             self.trace_output.setPlainText(result.details)
+        for hop in parse_trace_hops(result.details or self.trace_output.toPlainText()):
+            self._upsert_trace_hop(hop)
 
     def _set_trace_running(self, running: bool) -> None:
         self.tracert_button.setEnabled(not running)
@@ -865,6 +986,33 @@ class DiagnosticsTab(QWidget):
     def cancel_trace(self) -> None:
         if self.trace_cancel_event:
             self.trace_cancel_event.set()
+
+    def _upsert_trace_hop(self, hop: TraceHop) -> None:
+        row = self.trace_row_map.get(hop.hop_number)
+        if row is None:
+            row = self.trace_table.rowCount()
+            self.trace_table.insertRow(row)
+            self.trace_row_map[hop.hop_number] = row
+
+        values = [
+            str(hop.hop_number),
+            hop.probe_1 or "-",
+            hop.probe_2 or "-",
+            hop.probe_3 or "-",
+            f"{hop.average_ms:.2f}" if hop.average_ms is not None else "-",
+            hop.endpoint_text,
+            hop.status or "-",
+        ]
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            if column == 6:
+                if hop.status == "정상":
+                    item.setForeground(QColor("#1b5e20"))
+                elif hop.status == "시간 초과":
+                    item.setForeground(QColor("#b71c1c"))
+                else:
+                    item.setForeground(QColor("#ef6c00"))
+            self.trace_table.setItem(row, column, item)
 
     def load_interface_snapshot(self) -> None:
         self.tools_output.setPlainText("현재 인터페이스 정보를 불러오는 중...")
@@ -883,6 +1031,170 @@ class DiagnosticsTab(QWidget):
             on_result=lambda result: self.tools_output.setPlainText(result.details or result.message),
             error_title="도구 실행 실패",
         )
+
+    def refresh_arp_subnets(self) -> None:
+        self.arp_output.setPlainText("활성 IPv4 서브넷을 확인하는 중...")
+        self._start_worker(
+            self.state.network_interface_service.list_adapters,
+            on_result=self._populate_arp_subnets,
+            error_title="활성 서브넷 조회 실패",
+        )
+
+    def _populate_arp_subnets(self, adapters) -> None:
+        current_subnet = str(self.arp_subnet_combo.currentData() or "")
+        candidates = self.state.arp_scan_service.list_candidate_subnets(adapters)
+        self.arp_subnet_combo.clear()
+        self.arp_subnet_candidates = [subnet for _label, subnet in candidates]
+        for label, subnet in candidates:
+            self.arp_subnet_combo.addItem(label, subnet)
+
+        if current_subnet:
+            index = self.arp_subnet_combo.findData(current_subnet)
+            if index >= 0:
+                self.arp_subnet_combo.setCurrentIndex(index)
+
+        if candidates:
+            self.arp_output.setPlainText(f"활성 서브넷 {len(candidates)}개를 찾았습니다.")
+        else:
+            self.arp_output.setPlainText("사용 가능한 활성 IPv4 서브넷을 찾지 못했습니다.")
+
+    def use_selected_arp_subnet(self) -> None:
+        subnet = str(self.arp_subnet_combo.currentData() or "").strip()
+        if not subnet:
+            QMessageBox.warning(self, "선택 필요", "먼저 활성 서브넷 목록을 불러와 선택해 주세요.")
+            return
+        self.arp_subnet_edit.setText(subnet)
+
+    def start_arp_scan(self) -> None:
+        try:
+            timeout_ms = self._positive_int_or_default(self.arp_timeout_edit, "ARP Timeout", 800)
+            workers = self._positive_int_or_default(self.arp_workers_edit, "ARP 동시 실행 수", 64)
+        except ValidationError as exc:
+            QMessageBox.warning(self, "입력 확인", str(exc))
+            return
+
+        self.arp_table.setRowCount(0)
+        self.arp_output.clear()
+        self.arp_cancel_event = Event()
+        self._set_arp_running(True)
+        self._start_worker(
+            self.state.arp_scan_service.run_scan,
+            self.arp_subnet_edit.text().strip(),
+            timeout_ms,
+            workers,
+            cancel_event=self.arp_cancel_event,
+            on_progress=self.arp_output.appendPlainText,
+            on_result=self._finish_arp_scan,
+            on_finished=lambda: self._set_arp_running(False),
+            error_title="ARP 스캔 실패",
+        )
+
+    def _finish_arp_scan(self, result: OperationResult) -> None:
+        entries = result.payload if isinstance(result.payload, list) else []
+        self._populate_arp_table(entries)
+        if self.arp_output.toPlainText().strip():
+            self.arp_output.appendPlainText("")
+            self.arp_output.appendPlainText(f"[결과] {result.message}")
+        else:
+            self.arp_output.setPlainText(result.message)
+
+    def _populate_arp_table(self, entries: list[ArpScanEntry]) -> None:
+        self.arp_table.setRowCount(0)
+        for entry in entries:
+            row = self.arp_table.rowCount()
+            self.arp_table.insertRow(row)
+            values = [
+                entry.ip_address,
+                entry.mac_address or "-",
+                entry.vendor or "-",
+                entry.status_text,
+                f"{entry.response_ms:.0f}" if entry.response_ms is not None else "-",
+                entry.arp_type or "-",
+                entry.interface_name or "-",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 3:
+                    if entry.reachable:
+                        item.setForeground(QColor("#1b5e20"))
+                    elif entry.mac_address:
+                        item.setForeground(QColor("#ef6c00"))
+                    else:
+                        item.setForeground(QColor("#b71c1c"))
+                self.arp_table.setItem(row, column, item)
+
+    def _set_arp_running(self, running: bool) -> None:
+        self.arp_start_button.setEnabled(not running)
+        self.arp_cancel_button.setEnabled(running)
+        self.arp_refresh_subnets_button.setEnabled(not running)
+        self.arp_use_selected_subnet_button.setEnabled(not running)
+        self.arp_refresh_oui_button.setEnabled(not running)
+
+    def cancel_arp_scan(self) -> None:
+        if self.arp_cancel_event:
+            self.arp_cancel_event.set()
+
+    def lookup_oui_vendor(self) -> None:
+        mac_address = self.oui_mac_edit.text().strip()
+        if not mac_address:
+            QMessageBox.warning(self, "입력 확인", "조회할 MAC 주소를 입력해 주세요.")
+            return
+
+        match = self.state.oui_service.lookup(mac_address)
+        normalized = self.state.oui_service.normalize_mac(mac_address)
+        if match is None:
+            self.oui_result_output.setPlainText(
+                "\n".join(
+                    [
+                        f"입력 MAC: {mac_address}",
+                        f"정규화: {normalized or '-'}",
+                        "",
+                        "일치하는 OUI를 찾지 못했습니다.",
+                        self.state.oui_service.cache_summary(),
+                    ]
+                )
+            )
+            return
+
+        self.oui_result_output.setPlainText(
+            "\n".join(
+                [
+                    f"입력 MAC: {mac_address}",
+                    f"정규화: {normalized}",
+                    f"벤더: {match.organization}",
+                    f"레지스트리: {match.registry}",
+                    f"접두어: {match.prefix} ({match.prefix_bits} bit)",
+                    "",
+                    self.state.oui_service.cache_summary(),
+                ]
+            )
+        )
+
+    def refresh_oui_cache(self, output_widget: QPlainTextEdit) -> None:
+        output_widget.clear()
+        self._start_worker(
+            self.state.oui_service.refresh_cache,
+            on_progress=output_widget.appendPlainText,
+            on_result=lambda result, widget=output_widget: self._finish_oui_refresh(result, widget),
+            error_title="OUI 캐시 갱신 실패",
+        )
+
+    def _finish_oui_refresh(self, result: OperationResult, output_widget: QPlainTextEdit) -> None:
+        self._refresh_oui_status_labels()
+        if output_widget.toPlainText().strip():
+            output_widget.appendPlainText("")
+            output_widget.appendPlainText(f"[결과] {result.message}")
+            if result.details:
+                output_widget.appendPlainText(result.details)
+        else:
+            output_widget.setPlainText(result.message + ("\n\n" + result.details if result.details else ""))
+
+    def _refresh_oui_status_labels(self) -> None:
+        summary = self.state.oui_service.cache_summary()
+        if hasattr(self, "arp_oui_status_label"):
+            self.arp_oui_status_label.setText(summary)
+        if hasattr(self, "oui_status_label"):
+            self.oui_status_label.setText(summary)
 
     def _load_cached_public_iperf_servers(self) -> None:
         cached = self.state.public_iperf_service.load_cached_servers()
@@ -1468,6 +1780,13 @@ class DiagnosticsTab(QWidget):
     def save_ui_state(self) -> dict:
         return {
             "current_tab": self.tab_widget.currentIndex(),
+            "tools": {
+                "current_subtab": self.tools_inner_tab.currentIndex(),
+                "arp_subnet": self.arp_subnet_edit.text().strip(),
+                "arp_timeout_ms": self.arp_timeout_edit.text().strip(),
+                "arp_workers": self.arp_workers_edit.text().strip(),
+                "oui_mac": self.oui_mac_edit.text().strip(),
+            },
             "ping": {
                 "targets": self.ping_targets_edit.toPlainText(),
                 "count": self.ping_count_edit.text().strip(),
@@ -1515,6 +1834,15 @@ class DiagnosticsTab(QWidget):
         current_tab = int(state.get("current_tab", 0) or 0)
         if 0 <= current_tab < self.tab_widget.count():
             self.tab_widget.setCurrentIndex(current_tab)
+
+        tools_state = state.get("tools", {})
+        tools_subtab = int(tools_state.get("current_subtab", 0) or 0)
+        if 0 <= tools_subtab < self.tools_inner_tab.count():
+            self.tools_inner_tab.setCurrentIndex(tools_subtab)
+        self.arp_subnet_edit.setText(str(tools_state.get("arp_subnet", "") or ""))
+        self.arp_timeout_edit.setText(str(tools_state.get("arp_timeout_ms", "") or ""))
+        self.arp_workers_edit.setText(str(tools_state.get("arp_workers", "") or ""))
+        self.oui_mac_edit.setText(str(tools_state.get("oui_mac", "") or ""))
 
         ping_state = state.get("ping", {})
         self.ping_targets_edit.setPlainText(str(ping_state.get("targets", "") or ""))

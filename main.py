@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.app_state import AppState
 from app.main_window import MainWindow
+from app.utils.file_utils import resolve_asset_path
 from app.version import __version__
 
 
@@ -14,9 +16,14 @@ def main() -> int:
     app.setApplicationName("NetOps Toolkit")
     app.setOrganizationName("NetOps Toolkit")
     app.setApplicationVersion(__version__)
+    app_icon_path = resolve_asset_path("icons", "netops_toolkit.ico")
+    if app_icon_path.exists():
+        app.setWindowIcon(QIcon(str(app_icon_path)))
 
     state = AppState()
     window = MainWindow(state)
+    if app_icon_path.exists():
+        window.setWindowIcon(QIcon(str(app_icon_path)))
     window.show()
 
     if not state.paths.config_dir.exists():

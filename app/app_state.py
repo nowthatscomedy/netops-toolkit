@@ -6,10 +6,12 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThreadPool, Signal
 
 from app.models.profile_models import IPProfile, WifiAdvancedProfile
+from app.services.arp_scan_service import ArpScanService
 from app.services.dns_service import DnsService
 from app.services.iperf_service import IperfService
 from app.services.logging_service import configure_logging
 from app.services.network_interface_service import NetworkInterfaceService
+from app.services.oui_service import OuiService
 from app.services.ping_service import PingService
 from app.services.powershell_service import PowerShellService
 from app.services.public_iperf_service import PublicIperfService
@@ -50,11 +52,13 @@ class AppState(QObject):
 
         self.powershell_service = PowerShellService(self.logger)
         self.network_interface_service = NetworkInterfaceService(self.powershell_service, self.logger)
+        self.oui_service = OuiService(self.paths, self.logger)
+        self.arp_scan_service = ArpScanService(self.oui_service, self.logger)
         self.ping_service = PingService(self.logger)
         self.tcp_check_service = TcpCheckService(self.logger)
         self.dns_service = DnsService(self.powershell_service, self.logger)
         self.trace_service = TraceService(self.logger)
-        self.wireless_service = WirelessService(self.powershell_service, self.logger)
+        self.wireless_service = WirelessService(self.powershell_service, self.logger, self.oui_service)
         self.iperf_service = IperfService(self.paths, self.logger)
         self.public_iperf_service = PublicIperfService(self.paths, self.logger)
         self.wifi_profile_service = WifiProfileService(self.powershell_service, self.logger)
