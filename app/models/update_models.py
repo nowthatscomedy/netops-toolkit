@@ -17,6 +17,7 @@ class UpdateCheckResult:
     success: bool
     current_version: str
     latest_version: str = ""
+    is_prerelease: bool = False
     update_available: bool = False
     install_ready: bool = False
     requires_config: bool = False

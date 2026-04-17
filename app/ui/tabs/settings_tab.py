@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -15,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.app_state import AppState
-from app.utils.file_utils import open_in_explorer
+from app.utils.file_utils import default_update_config, open_in_explorer
 from app.version import __version__
 
 
@@ -36,7 +35,7 @@ class SettingsTab(QWidget):
         update_layout = QVBoxLayout(update_group)
 
         summary_label = QLabel(
-            "공개 GitHub Releases를 사용합니다. 설치 파일을 다운로드한 뒤 SHA-256을 검증하고, "
+            "공식 배포 채널에서 새 버전을 확인합니다. 설치 파일은 다운로드 후 SHA-256을 검증하고, "
             "사용자가 확인한 경우에만 설치 프로그램을 실행합니다."
         )
         summary_label.setWordWrap(True)
@@ -44,29 +43,23 @@ class SettingsTab(QWidget):
 
         form = QFormLayout()
         self.version_label = QLabel(__version__)
-        self.github_repo_edit = QLineEdit()
-        self.github_repo_edit.setPlaceholderText("예: your-org/netops-toolkit")
-        self.asset_pattern_edit = QLineEdit()
-        self.asset_pattern_edit.setPlaceholderText(r"예: NetOpsToolkit-setup.*\.exe$")
         self.check_on_startup_check = QCheckBox("프로그램 시작 시 업데이트 확인")
         self.include_prerelease_check = QCheckBox("사전 배포(prerelease) 포함")
 
         form.addRow("현재 버전", self.version_label)
-        form.addRow("GitHub 저장소", self.github_repo_edit)
-        form.addRow("설치 파일 패턴", self.asset_pattern_edit)
         form.addRow("", self.check_on_startup_check)
         form.addRow("", self.include_prerelease_check)
         update_layout.addLayout(form)
 
         button_row = QHBoxLayout()
-        self.save_update_button = QPushButton("업데이트 설정 저장")
+        self.save_update_button = QPushButton("업데이트 옵션 저장")
         self.check_update_button = QPushButton("업데이트 확인")
         button_row.addWidget(self.save_update_button)
         button_row.addWidget(self.check_update_button)
         button_row.addStretch(1)
         update_layout.addLayout(button_row)
 
-        self.update_status_label = QLabel("저장소를 설정하면 업데이트 확인을 사용할 수 있습니다.")
+        self.update_status_label = QLabel("업데이트는 프로그램 내부에 고정된 공식 배포 채널을 사용합니다.")
         self.update_status_label.setWordWrap(True)
         self.update_details = QPlainTextEdit()
         self.update_details.setReadOnly(True)
@@ -104,19 +97,17 @@ class SettingsTab(QWidget):
         self.check_update_button.clicked.connect(self._request_update_check)
 
     def current_update_config(self) -> dict:
-        return {
-            "github_repo": self.github_repo_edit.text().strip(),
-            "installer_asset_pattern": self.asset_pattern_edit.text().strip() or r"NetOpsToolkit-setup.*\.exe$",
-            "check_on_startup": self.check_on_startup_check.isChecked(),
-            "include_prerelease": self.include_prerelease_check.isChecked(),
-        }
+        config = default_update_config()
+        config["check_on_startup"] = self.check_on_startup_check.isChecked()
+        config["include_prerelease"] = self.include_prerelease_check.isChecked()
+        return config
 
     def save_update_settings(self, show_feedback: bool = False) -> dict:
         config = dict(self.state.app_config)
         config["update"] = self.current_update_config()
         self.state.save_app_config(config)
         if show_feedback:
-            self.set_update_status("업데이트 설정을 저장했습니다.")
+            self.set_update_status("업데이트 옵션을 저장했습니다.")
         return config["update"]
 
     def set_update_status(self, message: str, details: str = "") -> None:
@@ -132,10 +123,6 @@ class SettingsTab(QWidget):
 
     def reload_view(self) -> None:
         update_config = self.state.app_config.get("update", {})
-        self.github_repo_edit.setText(str(update_config.get("github_repo", "") or ""))
-        self.asset_pattern_edit.setText(
-            str(update_config.get("installer_asset_pattern", r"NetOpsToolkit-setup.*\.exe$") or "")
-        )
         self.check_on_startup_check.setChecked(bool(update_config.get("check_on_startup", True)))
         self.include_prerelease_check.setChecked(bool(update_config.get("include_prerelease", False)))
 
@@ -144,9 +131,7 @@ class SettingsTab(QWidget):
         self.wifi_profile_label.setText(f"Wi-Fi 프로필: {self.state.paths.wifi_profiles}")
         self.log_dir_label.setText(f"로그 폴더: {self.state.paths.logs_dir}")
         self.version_label.setText(__version__)
-
-        if not self.github_repo_edit.text().strip():
-            self.set_update_status("저장소를 설정하면 업데이트 확인을 사용할 수 있습니다.")
+        self.set_update_status("업데이트는 프로그램 내부에 고정된 공식 배포 채널을 사용합니다.")
 
     def _request_update_check(self) -> None:
         update_config = self.save_update_settings(show_feedback=False)

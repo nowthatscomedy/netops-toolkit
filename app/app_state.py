@@ -18,7 +18,15 @@ from app.services.update_service import UpdateService
 from app.services.wifi_profile_service import WifiProfileService
 from app.services.wireless_service import WirelessService
 from app.utils.admin import is_running_as_admin
-from app.utils.file_utils import AppPaths, build_app_paths, default_app_config, ensure_runtime_files, load_json, save_json
+from app.utils.file_utils import (
+    AppPaths,
+    build_app_paths,
+    default_app_config,
+    ensure_runtime_files,
+    load_json,
+    normalize_update_config,
+    save_json,
+)
 
 
 class AppState(QObject):
@@ -57,12 +65,8 @@ class AppState(QObject):
         loaded_config = load_json(self.paths.app_config, {})
         base_config = default_app_config()
         if isinstance(loaded_config, dict):
-            merged_update = dict(base_config.get("update", {}))
-            loaded_update = loaded_config.get("update", {})
-            if isinstance(loaded_update, dict):
-                merged_update.update(loaded_update)
             base_config.update({key: value for key, value in loaded_config.items() if key != "update"})
-            base_config["update"] = merged_update
+            base_config["update"] = normalize_update_config(loaded_config.get("update", {}))
         self.app_config = base_config
         profiles = [IPProfile.from_dict(item) for item in load_json(self.paths.ip_profiles, [])]
         legacy_presets = load_json(self.paths.vendor_presets, [])
@@ -87,7 +91,9 @@ class AppState(QObject):
             self.logger.info("Configuration reloaded from disk.")
 
     def save_app_config(self, config: dict) -> None:
-        self.app_config = config
+        normalized = dict(config)
+        normalized["update"] = normalize_update_config(config.get("update", {}))
+        self.app_config = normalized
         save_json(self.paths.app_config, self.app_config)
         self.logger.info("Saved app_config.json")
 

@@ -209,8 +209,6 @@ class MainWindow(QMainWindow):
         update_config = dict(self.state.app_config.get("update", {}) or {})
         if not update_config.get("check_on_startup", True):
             return
-        if not str(update_config.get("github_repo", "") or "").strip():
-            return
         self._check_for_updates(update_config, manual=False)
 
     def _check_for_updates(self, update_config: dict, manual: bool) -> None:
@@ -258,6 +256,8 @@ class MainWindow(QMainWindow):
             details_lines.append(f"릴리즈: {result.release_name}")
         if result.latest_version:
             details_lines.append(f"최신 버전: {result.latest_version}")
+        if result.is_prerelease:
+            details_lines.append("배포 종류: 사전배포")
         if result.published_at:
             details_lines.append(f"게시일: {result.published_at}")
         if result.release_url:
@@ -290,6 +290,8 @@ class MainWindow(QMainWindow):
             f"현재 버전: {result.current_version}",
             f"최신 버전: {result.latest_version}",
         ]
+        if result.is_prerelease:
+            message_lines.append("배포 종류: 사전배포")
         if result.release_name:
             message_lines.append(f"릴리즈: {result.release_name}")
         if result.asset:

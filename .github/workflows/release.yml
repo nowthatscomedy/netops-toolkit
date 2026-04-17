@@ -7,13 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag name (example: v1.0.2)"
+        description: "Release tag name (example: v1.0.3-beta.1)"
         required: true
-        default: "v1.0.2"
+        default: "v1.0.3-beta.1"
       release_name:
         description: "Optional release title"
         required: false
         default: ""
+      prerelease:
+        description: "Publish as prerelease"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -34,6 +39,7 @@ jobs:
             $tagName = "${{ inputs.tag_name }}".Trim()
             $releaseName = "${{ inputs.release_name }}".Trim()
             $version = $tagName.TrimStart("v")
+            $isPrerelease = "${{ inputs.prerelease }}" -eq "true"
           }
           else {
             $versionFile = Get-Content -Path "app/version.py" -Raw
@@ -43,6 +49,7 @@ jobs:
             $version = $Matches[1].Trim()
             $tagName = "v$version"
             $releaseName = ""
+            $isPrerelease = $version -match "-"
           }
 
           if ([string]::IsNullOrWhiteSpace($tagName)) {
@@ -61,6 +68,7 @@ jobs:
           "tag_name=$tagName" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
           "release_name=$releaseName" >> $env:GITHUB_OUTPUT
+          "is_prerelease=$($isPrerelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Check Existing Release
         id: release_guard
@@ -163,4 +171,5 @@ jobs:
             -Repository "${{ github.repository }}" `
             -TagName "${{ steps.meta.outputs.tag_name }}" `
             -ReleaseName "${{ steps.meta.outputs.release_name }}" `
-            -AssetPath $asset
+            -AssetPath $asset `
+            -IsPrerelease:([System.Convert]::ToBoolean("${{ steps.meta.outputs.is_prerelease }}"))

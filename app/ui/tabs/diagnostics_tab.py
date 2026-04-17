@@ -77,12 +77,15 @@ class DiagnosticsTab(QWidget):
         self.tcp_cancel_event: Event | None = None
         self.trace_cancel_event: Event | None = None
         self.iperf_cancel_event: Event | None = None
+        self.iperf_manage_cancel_event: Event | None = None
 
         self.ping_row_map: dict[tuple[str, str], int] = {}
         self.tcp_row_map: dict[tuple[str, str, int], int] = {}
         self.ping_log_lines: dict[tuple[str, str], list[str]] = {}
         self.tcp_log_lines: dict[tuple[str, str, int], list[str]] = {}
         self._iperf_available = False
+        self._iperf_manage_available = False
+        self._iperf_manage_enabled = False
 
         self.fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self._build_ui()
@@ -342,9 +345,11 @@ class DiagnosticsTab(QWidget):
 
         help_button_row = QHBoxLayout()
         self.iperf_refresh_button = QPushButton("상태 새로고침")
+        self.iperf_manage_button = QPushButton("winget 설치")
         self.iperf_open_folder_button = QPushButton("프로그램 폴더 열기")
-        self.iperf_download_button = QPushButton("공식 다운로드")
+        self.iperf_download_button = QPushButton("패키지 페이지")
         help_button_row.addWidget(self.iperf_refresh_button)
+        help_button_row.addWidget(self.iperf_manage_button)
         help_button_row.addWidget(self.iperf_open_folder_button)
         help_button_row.addWidget(self.iperf_download_button)
         help_button_row.addStretch(1)
@@ -367,6 +372,7 @@ class DiagnosticsTab(QWidget):
         self.iperf_run_button.clicked.connect(self.run_iperf_test)
         self.iperf_cancel_button.clicked.connect(self.cancel_iperf_test)
         self.iperf_refresh_button.clicked.connect(self.refresh_iperf_availability)
+        self.iperf_manage_button.clicked.connect(self.manage_iperf_install)
         self.iperf_open_folder_button.clicked.connect(lambda: open_in_explorer(self.state.paths.root))
         self.iperf_download_button.clicked.connect(self.open_iperf_download_page)
         self._update_iperf_mode_state()
@@ -820,31 +826,121 @@ class DiagnosticsTab(QWidget):
 
     def refresh_iperf_availability(self) -> None:
         executable_path, source = self.state.iperf_service.executable_details()
+        manage_state = self.state.iperf_service.managed_install_state()
         self._iperf_available = executable_path is not None
+        self._iperf_manage_available = bool(manage_state["available"])
+        self._iperf_manage_enabled = bool(manage_state["button_enabled"])
+        self.iperf_manage_button.setText(str(manage_state["action_label"]))
 
         if self._iperf_available:
-            source_text = "프로그램 폴더" if source == "program folder" else "시스템 PATH"
-            self.iperf_status_label.setText(
-                f"사용 가능 ({source_text})\n{executable_path}"
-            )
+            version = self.state.iperf_service.executable_version(executable_path)
+            source_text = {
+                "program folder": "프로그램 폴더",
+                "winget": "winget 관리형 설치",
+                "system PATH": "시스템 PATH",
+            }.get(source, source or "알 수 없음")
+            lines = [f"사용 가능 ({source_text})"]
+            if version:
+                lines.append(f"버전: {version}")
+            lines.append(executable_path)
+            if self._iperf_manage_available:
+                if self._iperf_manage_enabled:
+                    lines.append(f"관리형 작업: {manage_state['action_label']} 가능 ({manage_state['package_id']})")
+                else:
+                    lines.append(f"관리형 작업: {manage_state['action_label']} ({manage_state['package_id']})")
+            self.iperf_status_label.setText("\n".join(lines))
             self.iperf_status_label.setStyleSheet("color:#1b5e20;")
         else:
-            self.iperf_status_label.setText(
-                "현재 iperf3를 찾지 못했습니다.\n"
-                "1) 프로그램 폴더에 iperf3.exe를 복사하거나\n"
-                "2) 시스템 PATH에 iperf3를 설치한 뒤\n"
-                "3) '상태 새로고침'을 눌러 주세요."
-            )
+            lines = ["현재 iperf3를 찾지 못했습니다."]
+            if self._iperf_manage_available:
+                lines.extend(
+                    [
+                        f"1) 아래 '{manage_state['action_label']}' 버튼으로 현재 사용자에 설치/업데이트",
+                        "2) 프로그램 폴더에 iperf3.exe를 직접 배치",
+                        "3) 시스템 PATH에 iperf3를 설치한 뒤 '상태 새로고침' 실행",
+                        "참고: ESnet 공식 릴리스는 현재 Windows 실행 파일을 직접 제공하지 않아 winget 패키지를 함께 지원합니다.",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        "1) 프로그램 폴더에 iperf3.exe를 직접 배치",
+                        "2) 시스템 PATH에 iperf3를 설치한 뒤 '상태 새로고침' 실행",
+                        "참고: winget이 없는 환경에서는 수동 설치가 필요합니다.",
+                    ]
+                )
+            self.iperf_status_label.setText("\n".join(lines))
             self.iperf_status_label.setStyleSheet("color:#8d6e00;")
 
         self._set_iperf_running(self.iperf_cancel_button.isEnabled())
 
     def open_iperf_download_page(self) -> None:
-        QDesktopServices.openUrl(QUrl(self.state.iperf_service.DOWNLOAD_URL))
+        QDesktopServices.openUrl(QUrl(self.state.iperf_service.managed_package_page()))
+
+    def manage_iperf_install(self) -> None:
+        manage_state = self.state.iperf_service.managed_install_state()
+        if not bool(manage_state["available"]):
+            QMessageBox.warning(
+                self,
+                "winget 사용 불가",
+                "이 시스템에서는 winget을 찾지 못해 프로그램 내부 설치를 진행할 수 없습니다.",
+            )
+            return
+        if not bool(manage_state["button_enabled"]):
+            QMessageBox.information(
+                self,
+                "최신 버전 사용 중",
+                "현재 winget 기준 최신 iperf3가 이미 설치되어 있습니다.",
+            )
+            return
+
+        action_label = "업데이트" if bool(manage_state["installed"]) else "설치"
+        reply = QMessageBox.question(
+            self,
+            "iperf3 관리형 설치",
+            (
+                f"iperf3를 winget 패키지로 {action_label}하시겠습니까?\n\n"
+                f"패키지 ID: {manage_state['package_id']}\n"
+                f"패키지 페이지: {manage_state['package_url']}\n\n"
+                "현재 사용자 범위에 설치되며, 실행 파일이 준비되면 바로 앱에서 사용할 수 있습니다."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.iperf_output.clear()
+        self.iperf_manage_cancel_event = Event()
+        self._set_iperf_running(True)
+
+        self._start_worker(
+            self.state.iperf_service.install_or_update_managed,
+            cancel_event=self.iperf_manage_cancel_event,
+            on_progress=self.iperf_output.appendPlainText,
+            on_result=self._finish_iperf_manage,
+            on_finished=self._finish_iperf_operation,
+            error_title="iperf3 설치 실패",
+        )
 
     def run_iperf_test(self) -> None:
         self.refresh_iperf_availability()
         if not self._iperf_available:
+            if self._iperf_manage_available:
+                reply = QMessageBox.question(
+                    self,
+                    "iperf3 설치 필요",
+                    (
+                        "iperf3 실행 파일을 찾지 못했습니다.\n\n"
+                        "지금 winget으로 설치/업데이트하시겠습니까?"
+                    ),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply == QMessageBox.Yes:
+                    self.manage_iperf_install()
+                return
+
             QMessageBox.information(
                 self,
                 "iperf3 설치 필요",
@@ -890,7 +986,7 @@ class DiagnosticsTab(QWidget):
             cancel_event=self.iperf_cancel_event,
             on_progress=self.iperf_output.appendPlainText,
             on_result=self._finish_iperf,
-            on_finished=lambda: self._set_iperf_running(False),
+            on_finished=self._finish_iperf_operation,
             error_title="iperf3 실행 실패",
         )
 
@@ -903,13 +999,36 @@ class DiagnosticsTab(QWidget):
         else:
             self.iperf_output.setPlainText(result.message + ("\n\n" + result.details if result.details else ""))
 
+    def _finish_iperf_manage(self, result: OperationResult) -> None:
+        streamed = self.iperf_output.toPlainText().strip()
+        summary = f"[결과] {result.message}"
+        if result.details and (not streamed or result.success):
+            summary = f"{summary}\n{result.details}"
+
+        if streamed:
+            self.iperf_output.appendPlainText("")
+            self.iperf_output.appendPlainText(summary)
+            return
+
+        self.iperf_output.setPlainText(summary)
+
+    def _finish_iperf_operation(self) -> None:
+        self.iperf_cancel_event = None
+        self.iperf_manage_cancel_event = None
+        self._set_iperf_running(False)
+        self.refresh_iperf_availability()
+
     def _set_iperf_running(self, running: bool) -> None:
         self.iperf_run_button.setEnabled((not running) and self._iperf_available)
         self.iperf_cancel_button.setEnabled(running)
+        self.iperf_refresh_button.setEnabled(not running)
+        self.iperf_manage_button.setEnabled((not running) and self._iperf_manage_enabled)
 
     def cancel_iperf_test(self) -> None:
         if self.iperf_cancel_event:
             self.iperf_cancel_event.set()
+        if self.iperf_manage_cancel_event:
+            self.iperf_manage_cancel_event.set()
 
     def export_selected_ping_logs(self) -> None:
         rows = self._selected_rows(self.ping_table)

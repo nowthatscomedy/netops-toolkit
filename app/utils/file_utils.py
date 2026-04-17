@@ -9,6 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+DEFAULT_UPDATE_REPO = "nowthatscomedy/netops-toolkit"
+DEFAULT_UPDATE_ASSET_PATTERN = r"NetOpsToolkit-setup.*\.exe$"
+
 
 @dataclass(slots=True)
 class AppPaths:
@@ -102,13 +105,25 @@ def default_app_config() -> dict[str, Any]:
         "default_tcp_workers": 32,
         "wireless_refresh_interval_sec": 2,
         "default_nslookup_type": "A",
-        "update": {
-            "github_repo": "nowthatscomedy/netops-toolkit",
-            "installer_asset_pattern": r"NetOpsToolkit-setup.*\.exe$",
-            "check_on_startup": True,
-            "include_prerelease": False,
-        },
+        "update": default_update_config(),
     }
+
+
+def default_update_config() -> dict[str, Any]:
+    return {
+        "github_repo": DEFAULT_UPDATE_REPO,
+        "installer_asset_pattern": DEFAULT_UPDATE_ASSET_PATTERN,
+        "check_on_startup": True,
+        "include_prerelease": False,
+    }
+
+
+def normalize_update_config(update_config: Any) -> dict[str, Any]:
+    config = default_update_config()
+    if isinstance(update_config, dict):
+        config["check_on_startup"] = bool(update_config.get("check_on_startup", config["check_on_startup"]))
+        config["include_prerelease"] = bool(update_config.get("include_prerelease", config["include_prerelease"]))
+    return config
 
 
 def default_ip_profiles() -> list[dict[str, Any]]:

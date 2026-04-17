@@ -6,7 +6,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseName,
     [Parameter(Mandatory = $true)]
-    [string]$AssetPath
+    [string]$AssetPath,
+    [switch]$IsPrerelease
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +26,22 @@ $apiHeaders = @{
     "X-GitHub-Api-Version"  = "2022-11-28"
     "User-Agent"            = "NetOpsToolkit-Release"
 }
+
+function Test-IsPrereleaseTag {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TagName
+    )
+
+    $normalized = $TagName.Trim()
+    if ($normalized.StartsWith("v")) {
+        $normalized = $normalized.Substring(1)
+    }
+
+    return $normalized -match "-"
+}
+
+$prereleaseFlag = $IsPrerelease.IsPresent -or (Test-IsPrereleaseTag -TagName $TagName)
 
 function Invoke-GitHubRest {
     param(
@@ -67,7 +84,7 @@ if (-not $release) {
         tag_name              = $TagName
         name                  = $ReleaseName
         draft                 = $true
-        prerelease            = $false
+        prerelease            = $prereleaseFlag
         generate_release_notes = $true
     }
 }
@@ -98,9 +115,14 @@ if ($release.draft) {
         tag_name   = $TagName
         name       = $ReleaseName
         draft      = $false
-        prerelease = $false
+        prerelease = $prereleaseFlag
     }
-    Write-Host "Published release: $TagName"
+    if ($prereleaseFlag) {
+        Write-Host "Published prerelease: $TagName"
+    }
+    else {
+        Write-Host "Published release: $TagName"
+    }
 }
 
 Write-Host "Uploaded release asset: $assetName"

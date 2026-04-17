@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from app.models.update_models import DownloadedUpdate, ReleaseAsset, UpdateCheckResult
+from app.utils.file_utils import normalize_update_config
 from app.utils.process_utils import no_window_creationflags
 
 
@@ -27,7 +28,8 @@ class UpdateService:
         update_config: dict,
         progress_callback=None,
     ) -> UpdateCheckResult:
-        repo = self._normalize_repo(str(update_config.get("github_repo", "") or ""))
+        normalized_config = normalize_update_config(update_config)
+        repo = self._normalize_repo(str(normalized_config.get("github_repo", "") or ""))
         if not repo:
             return UpdateCheckResult(
                 success=False,
@@ -37,9 +39,9 @@ class UpdateService:
                 details="설정 탭에서 owner/repo 형식의 공개 저장소를 입력해 주세요.",
             )
 
-        include_prerelease = bool(update_config.get("include_prerelease", False))
+        include_prerelease = bool(normalized_config.get("include_prerelease", False))
         asset_pattern = str(
-            update_config.get("installer_asset_pattern", r"NetOpsToolkit-setup.*\.exe$")
+            normalized_config.get("installer_asset_pattern", r"NetOpsToolkit-setup.*\.exe$")
             or r"NetOpsToolkit-setup.*\.exe$"
         )
 
@@ -58,6 +60,7 @@ class UpdateService:
                 success=True,
                 current_version=current_version,
                 latest_version=latest_version,
+                is_prerelease=bool(release.get("prerelease")),
                 update_available=False,
                 install_ready=False,
                 message=f"이미 최신 버전입니다. (현재 {current_version})",
@@ -102,6 +105,7 @@ class UpdateService:
             success=True,
             current_version=current_version,
             latest_version=latest_version,
+            is_prerelease=bool(release.get("prerelease")),
             update_available=True,
             install_ready=install_ready,
             message=message,
@@ -172,19 +176,33 @@ class UpdateService:
         )
 
     def _fetch_release(self, repo: str, include_prerelease: bool) -> dict:
-        if include_prerelease:
-            releases = self._request_json(f"https://api.github.com/repos/{repo}/releases")
-            if not isinstance(releases, list):
-                raise ValueError("GitHub Releases 응답 형식이 올바르지 않습니다.")
-            for release in releases:
-                if not release.get("draft"):
-                    return release
-            raise ValueError("사용 가능한 GitHub 릴리즈를 찾지 못했습니다.")
-
-        release = self._request_json(f"https://api.github.com/repos/{repo}/releases/latest")
-        if not isinstance(release, dict):
+        releases = self._request_json(f"https://api.github.com/repos/{repo}/releases")
+        if not isinstance(releases, list):
             raise ValueError("GitHub Releases 응답 형식이 올바르지 않습니다.")
-        return release
+
+        candidates: list[dict] = []
+        for release in releases:
+            if release.get("draft"):
+                continue
+            if not include_prerelease and release.get("prerelease"):
+                continue
+            version = self._normalize_version(str(release.get("tag_name", "") or ""))
+            if not version:
+                continue
+            candidates.append(release)
+
+        if not candidates:
+            if include_prerelease:
+                raise ValueError("사용 가능한 GitHub 릴리즈를 찾지 못했습니다.")
+            raise ValueError("사용 가능한 정식 릴리즈를 찾지 못했습니다.")
+
+        candidates.sort(
+            key=lambda release: self._version_sort_key(
+                self._normalize_version(str(release.get("tag_name", "") or ""))
+            ),
+            reverse=True,
+        )
+        return candidates[0]
 
     def _request_json(self, url: str) -> dict | list:
         request = urllib.request.Request(
@@ -311,18 +329,67 @@ class UpdateService:
         text = value.strip()
         if text.lower().startswith("v"):
             text = text[1:]
-        match = re.match(r"(\d+(?:\.\d+)*)", text)
-        return match.group(1) if match else ""
+        match = re.fullmatch(r"(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?", text)
+        if not match:
+            return ""
+        base = match.group(1)
+        prerelease = match.group(2)
+        return f"{base}-{prerelease}" if prerelease else base
+
+    def _parse_version(self, value: str) -> tuple[tuple[int, ...], tuple[tuple[int, object], ...] | None]:
+        normalized = self._normalize_version(value)
+        if not normalized:
+            return tuple(), None
+
+        if "-" in normalized:
+            base, prerelease_text = normalized.split("-", 1)
+        else:
+            base, prerelease_text = normalized, ""
+
+        base_parts = tuple(int(part) for part in base.split(".") if part.strip())
+        prerelease_parts: list[tuple[int, object]] = []
+        if prerelease_text:
+            for token in prerelease_text.split("."):
+                token = token.strip()
+                if token.isdigit():
+                    prerelease_parts.append((0, int(token)))
+                else:
+                    prerelease_parts.append((1, token.lower()))
+            return base_parts, tuple(prerelease_parts)
+        return base_parts, None
+
+    def _version_sort_key(self, value: str) -> tuple[tuple[int, ...], int, tuple[tuple[int, object], ...]]:
+        base_parts, prerelease_parts = self._parse_version(value)
+        stability_rank = 1 if prerelease_parts is None else 0
+        return base_parts, stability_rank, prerelease_parts or tuple()
 
     def _compare_versions(self, left: str, right: str) -> int:
-        def parse_parts(value: str) -> tuple[int, ...]:
-            return tuple(int(part) for part in value.split(".") if part.strip())
-
-        left_parts = parse_parts(left)
-        right_parts = parse_parts(right)
+        left_parts, left_prerelease = self._parse_version(left)
+        right_parts, right_prerelease = self._parse_version(right)
         max_length = max(len(left_parts), len(right_parts))
         left_parts = left_parts + (0,) * (max_length - len(left_parts))
         right_parts = right_parts + (0,) * (max_length - len(right_parts))
-        if left_parts == right_parts:
+        if left_parts != right_parts:
+            return 1 if left_parts > right_parts else -1
+
+        if left_prerelease is None and right_prerelease is None:
             return 0
-        return 1 if left_parts > right_parts else -1
+        if left_prerelease is None:
+            return 1
+        if right_prerelease is None:
+            return -1
+
+        max_length = max(len(left_prerelease), len(right_prerelease))
+        for index in range(max_length):
+            if index >= len(left_prerelease):
+                return -1
+            if index >= len(right_prerelease):
+                return 1
+
+            left_kind, left_value = left_prerelease[index]
+            right_kind, right_value = right_prerelease[index]
+            if left_kind != right_kind:
+                return -1 if left_kind < right_kind else 1
+            if left_value != right_value:
+                return 1 if left_value > right_value else -1
+        return 0
