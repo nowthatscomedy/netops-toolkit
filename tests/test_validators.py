@@ -1,4 +1,10 @@
-from app.utils.validators import calculate_subnet_details
+from app.utils.validators import (
+    calculate_subnet_details,
+    default_ftp_port,
+    format_prefix,
+    normalize_remote_path,
+    validate_ftp_protocol,
+)
 
 
 def test_calculate_subnet_details_slash_24():
@@ -30,3 +36,11 @@ def test_calculate_subnet_details_mask_input():
     assert details["prefix_length"] == "24"
     assert details["network_address"] == "172.16.1.0"
     assert details["broadcast_address"] == "172.16.1.255"
+
+
+def test_ftp_defaults_and_normalization():
+    assert validate_ftp_protocol("FTPS") == "ftps"
+    assert default_ftp_port("ftp") == 21
+    assert default_ftp_port("sftp", server_mode=True) == 2222
+    assert normalize_remote_path("logs\\today") == "/logs/today"
+    assert format_prefix("255.255.255.0") == "24 / 255.255.255.0"

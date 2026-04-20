@@ -207,7 +207,7 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 # Inno Setup 6 필요
-powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.5 -Clean
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.0.6 -Clean
 ```
 
 ### 관련 스크립트
@@ -231,7 +231,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1 -Version 1.
 4. GitHub Release 업로드
 5. 사용자 앱에서 업데이트 확인
 
-사전 배포를 만들 때는 `app/version.py`를 예: `1.0.5-beta.1` 형식으로 올리면 워크플로가 prerelease로 발행할 수 있습니다.
+사전 배포를 만들 때는 `app/version.py`를 예: `1.0.6-beta.1` 형식으로 올리면 워크플로가 prerelease로 발행할 수 있습니다.
 
 ## 참고
 

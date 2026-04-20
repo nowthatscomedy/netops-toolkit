@@ -5,9 +5,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThreadPool, Signal
 
+from app.models.ftp_models import FtpProfile
 from app.models.profile_models import IPProfile
+from app.models.scp_models import ScpProfile
 from app.services.arp_scan_service import ArpScanService
 from app.services.dns_service import DnsService
+from app.services.ftp_client_service import FtpClientService
+from app.services.ftp_server_service import FtpServerService
 from app.services.iperf_service import IperfService
 from app.services.logging_service import configure_logging
 from app.services.network_interface_service import NetworkInterfaceService
@@ -15,6 +19,8 @@ from app.services.oui_service import OuiService
 from app.services.ping_service import PingService
 from app.services.powershell_service import PowerShellService
 from app.services.public_iperf_service import PublicIperfService
+from app.services.scp_client_service import ScpClientService
+from app.services.scp_server_service import ScpServerService
 from app.services.tcp_check_service import TcpCheckService
 from app.services.trace_service import TraceService
 from app.services.update_service import UpdateService
@@ -46,6 +52,10 @@ class AppState(QObject):
 
         self.app_config: dict = {}
         self.ip_profiles: list[IPProfile] = []
+        self.ftp_profiles: list[FtpProfile] = []
+        self.ftp_runtime: dict = {}
+        self.scp_profiles: list[ScpProfile] = []
+        self.scp_runtime: dict = {}
         self.reload_config_files()
 
         self.powershell_service = PowerShellService(self.logger)
@@ -57,6 +67,10 @@ class AppState(QObject):
         self.dns_service = DnsService(self.powershell_service, self.logger)
         self.trace_service = TraceService(self.logger)
         self.wireless_service = WirelessService(self.powershell_service, self.logger, self.oui_service)
+        self.ftp_client_service = FtpClientService(self.paths, self.logger)
+        self.ftp_server_service = FtpServerService(self.paths, self.logger)
+        self.scp_client_service = ScpClientService(self.paths, self.logger)
+        self.scp_server_service = ScpServerService(self.paths, self.logger)
         self.iperf_service = IperfService(self.paths, self.logger)
         self.public_iperf_service = PublicIperfService(self.paths, self.logger)
         self.update_service = UpdateService(self.logger)
@@ -91,6 +105,12 @@ class AppState(QObject):
                 profiles.append(migrated)
                 existing_names.add(migrated.name.casefold())
         self.ip_profiles = profiles
+        self.ftp_profiles = [FtpProfile.from_dict(item) for item in load_json(self.paths.ftp_profiles, [])]
+        loaded_ftp_runtime = load_json(self.paths.ftp_runtime, {})
+        self.ftp_runtime = loaded_ftp_runtime if isinstance(loaded_ftp_runtime, dict) else {}
+        self.scp_profiles = [ScpProfile.from_dict(item) for item in load_json(self.paths.scp_profiles, [])]
+        loaded_scp_runtime = load_json(self.paths.scp_runtime, {})
+        self.scp_runtime = loaded_scp_runtime if isinstance(loaded_scp_runtime, dict) else {}
         if migrated_legacy:
             save_json(self.paths.ip_profiles, [profile.to_dict() for profile in self.ip_profiles])
             save_json(self.paths.vendor_presets, [])
@@ -118,4 +138,26 @@ class AppState(QObject):
         save_json(self.paths.ip_profiles, [profile.to_dict() for profile in self.ip_profiles])
         self.logger.info("Saved %s IP profiles.", len(self.ip_profiles))
         self.config_reloaded.emit()
+
+    def save_ftp_profiles(self, profiles: list[FtpProfile]) -> None:
+        self.ftp_profiles = profiles
+        save_json(self.paths.ftp_profiles, [profile.to_dict() for profile in self.ftp_profiles])
+        self.logger.info("Saved %s FTP profiles.", len(self.ftp_profiles))
+        self.config_reloaded.emit()
+
+    def save_ftp_runtime(self, runtime: dict) -> None:
+        self.ftp_runtime = dict(runtime)
+        save_json(self.paths.ftp_runtime, self.ftp_runtime)
+        self.logger.info("Saved ftp_runtime.json")
+
+    def save_scp_profiles(self, profiles: list[ScpProfile]) -> None:
+        self.scp_profiles = profiles
+        save_json(self.paths.scp_profiles, [profile.to_dict() for profile in self.scp_profiles])
+        self.logger.info("Saved %s SCP profiles.", len(self.scp_profiles))
+        self.config_reloaded.emit()
+
+    def save_scp_runtime(self, runtime: dict) -> None:
+        self.scp_runtime = dict(runtime)
+        save_json(self.paths.scp_runtime, self.scp_runtime)
+        self.logger.info("Saved scp_runtime.json")
 

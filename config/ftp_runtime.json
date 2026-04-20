@@ -1,0 +1,22 @@
+{
+  "client": {
+    "protocol": "ftp",
+    "host": "",
+    "port": "21",
+    "username": "",
+    "passive_mode": true,
+    "timeout_seconds": "15",
+    "local_folder": "",
+    "remote_path": "/",
+    "selected_profile": ""
+  },
+  "server": {
+    "protocol": "ftp",
+    "bind_host": "0.0.0.0",
+    "port": "2121",
+    "root_folder": "",
+    "username": "netops",
+    "read_only": false,
+    "anonymous_readonly": false
+  }
+}

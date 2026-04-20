@@ -16,7 +16,7 @@ function Format-PyInstallerBundleArg {
 
     $normalizedSource = $Source -replace "\\", "/"
     $normalizedDestination = $Destination -replace "\\", "/"
-    return "$normalizedSource`:$normalizedDestination"
+    return "$normalizedSource;$normalizedDestination"
 }
 
 function Resolve-IsccPath {
@@ -32,6 +32,14 @@ function Resolve-IsccPath {
     }
 
     throw "ISCC.exe from Inno Setup 6 was not found. Please install Inno Setup first."
+}
+
+function Test-FtpRuntimeDependencies {
+    Write-Host "Verifying FTP runtime dependencies..."
+    & python -c "import pyftpdlib, OpenSSL, paramiko; print('FTP runtime dependencies OK')"
+    if ($LASTEXITCODE -ne 0) {
+        throw "FTP runtime dependency smoke check failed."
+    }
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -67,6 +75,10 @@ New-Item -ItemType Directory -Force -Path $stagingLogsExportsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "config\ip_profiles.json") -Destination $stagingConfigDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "config\ftp_profiles.json") -Destination $stagingConfigDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "config\ftp_runtime.json") -Destination $stagingConfigDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "config\scp_profiles.json") -Destination $stagingConfigDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "config\scp_runtime.json") -Destination $stagingConfigDir -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "config\vendor_presets.json") -Destination $stagingConfigDir -Force
 
 Set-Content -LiteralPath (Join-Path $stagingLogsDir ".gitkeep") -Value "" -Encoding UTF8
@@ -79,9 +91,9 @@ $pyInstallerArgs = @(
     "--windowed",
     "--name", "NetOpsToolkit",
     "--icon", (Join-Path $repoRoot "assets\icons\netops_toolkit.ico"),
-    "--add-data", (Format-PyInstallerBundleArg -Source $stagingConfigDir -Destination "config"),
-    "--add-data", (Format-PyInstallerBundleArg -Source $stagingLogsDir -Destination "logs"),
-    "--add-data", (Format-PyInstallerBundleArg -Source (Join-Path $repoRoot "assets\icons") -Destination "assets/icons"),
+    "--add-data=$(Format-PyInstallerBundleArg -Source $stagingConfigDir -Destination 'config')",
+    "--add-data=$(Format-PyInstallerBundleArg -Source $stagingLogsDir -Destination 'logs')",
+    "--add-data=$(Format-PyInstallerBundleArg -Source (Join-Path $repoRoot 'assets\icons') -Destination 'assets/icons')",
     "main.py"
 )
 
@@ -95,11 +107,12 @@ $optionalBinaries = @(
 foreach ($binaryName in $optionalBinaries) {
     $binaryPath = Join-Path $repoRoot $binaryName
     if (Test-Path $binaryPath) {
-        $pyInstallerArgs += @("--add-binary", (Format-PyInstallerBundleArg -Source $binaryPath -Destination "."))
+        $pyInstallerArgs += @("--add-binary=$(Format-PyInstallerBundleArg -Source $binaryPath -Destination '.')")
     }
 }
 
 Write-Host "Building PyInstaller bundle for version $normalizedVersion..."
+Test-FtpRuntimeDependencies
 & python @pyInstallerArgs
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed."

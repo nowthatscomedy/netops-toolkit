@@ -22,9 +22,14 @@ class AppPaths:
     exports_dir: Path
     app_config: Path
     ip_profiles: Path
+    ftp_profiles: Path
+    ftp_runtime: Path
+    scp_profiles: Path
+    scp_runtime: Path
     vendor_presets: Path
     public_iperf_cache: Path
     oui_cache: Path
+    ftp_keys_dir: Path
     app_log: Path
 
 
@@ -32,6 +37,14 @@ def detect_root_path() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
+
+
+def is_packaged_runtime() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def execution_environment_label() -> str:
+    return "설치본 실행" if is_packaged_runtime() else "소스 실행"
 
 
 def resolve_asset_path(*parts: str) -> Path:
@@ -94,9 +107,14 @@ def build_app_paths(root_dir: Path | None = None) -> AppPaths:
         exports_dir=exports_dir,
         app_config=config_dir / "app_config.json",
         ip_profiles=config_dir / "ip_profiles.json",
+        ftp_profiles=config_dir / "ftp_profiles.json",
+        ftp_runtime=config_dir / "ftp_runtime.json",
+        scp_profiles=config_dir / "scp_profiles.json",
+        scp_runtime=config_dir / "scp_runtime.json",
         vendor_presets=config_dir / "vendor_presets.json",
         public_iperf_cache=config_dir / "public_iperf_servers_cache.json",
         oui_cache=config_dir / "oui_cache.json",
+        ftp_keys_dir=config_dir / "ftp_keys",
         app_log=logs_dir / "app.log",
     )
 
@@ -173,13 +191,72 @@ def default_vendor_presets() -> list[dict[str, Any]]:
     return []
 
 
+def default_ftp_profiles() -> list[dict[str, Any]]:
+    return []
+
+
+def default_ftp_runtime() -> dict[str, Any]:
+    return {
+        "client": {
+            "protocol": "ftp",
+            "host": "",
+            "port": "21",
+            "username": "",
+            "passive_mode": True,
+            "timeout_seconds": "15",
+            "local_folder": "",
+            "remote_path": "/",
+            "selected_profile": "",
+        },
+        "server": {
+            "protocol": "ftp",
+            "bind_host": "0.0.0.0",
+            "port": "2121",
+            "root_folder": "",
+            "username": "netops",
+            "read_only": False,
+            "anonymous_readonly": False,
+        },
+    }
+
+
+def default_scp_profiles() -> list[dict[str, Any]]:
+    return []
+
+
+def default_scp_runtime() -> dict[str, Any]:
+    return {
+        "client": {
+            "host": "",
+            "port": "22",
+            "username": "",
+            "timeout_seconds": "15",
+            "remote_path": ".",
+            "remote_sources": "",
+            "local_folder": "",
+            "selected_profile": "",
+        },
+        "server": {
+            "bind_host": "0.0.0.0",
+            "port": "2223",
+            "root_folder": "",
+            "username": "netops",
+            "read_only": False,
+        },
+    }
+
+
 def ensure_runtime_files(paths: AppPaths) -> None:
-    for directory in (paths.config_dir, paths.logs_dir, paths.exports_dir):
+    for directory in (paths.config_dir, paths.logs_dir, paths.exports_dir, paths.ftp_keys_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     defaults = {
         paths.app_config: (default_app_config(), paths.root / "config" / "app_config.json"),
         paths.ip_profiles: (default_ip_profiles(), paths.root / "config" / "ip_profiles.json"),
+        paths.ftp_profiles: (default_ftp_profiles(), paths.root / "config" / "ftp_profiles.json"),
+        paths.ftp_runtime: (default_ftp_runtime(), paths.root / "config" / "ftp_runtime.json"),
+        paths.scp_profiles: (default_scp_profiles(), paths.root / "config" / "scp_profiles.json"),
+        paths.scp_runtime: (default_scp_runtime(), paths.root / "config" / "scp_runtime.json"),
         paths.vendor_presets: (default_vendor_presets(), paths.root / "config" / "vendor_presets.json"),
     }
     for file_path, (default_value, source_path) in defaults.items():
