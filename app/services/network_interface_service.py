@@ -70,10 +70,11 @@ $adapters | ConvertTo-Json -Depth 5 -Compress
             ["netsh", "interface", "ipv4", "set", "dnsservers", interface_ref, "source=dhcp"]
         )
         cleanup_result = self._cleanup_after_dhcp(interface_name)
+        renew_result = self._renew_dhcp_lease(interface_name)
 
         if address_result.success and dns_result.success:
-            details = "\n\n".join(filter(None, [cleanup_result.details]))
-            return OperationResult(True, f"{interface_name}에 DHCP를 적용했습니다.", details)
+            details = "\n\n".join(filter(None, [cleanup_result.details, renew_result.details]))
+            return OperationResult(True, self._dhcp_apply_message(interface_name, renew_result), details)
 
         alias = self.powershell.quote(interface_name)
         script = f"""
@@ -86,7 +87,9 @@ Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -ErrorAc
 """
         fallback = self.powershell.run(script, timeout=30)
         if fallback.success:
-            return OperationResult(True, f"{interface_name}에 DHCP를 적용했습니다.", cleanup_result.details)
+            fallback_renew = self._renew_dhcp_lease(interface_name)
+            details = "\n\n".join(filter(None, [cleanup_result.details, fallback_renew.details]))
+            return OperationResult(True, self._dhcp_apply_message(interface_name, fallback_renew), details)
 
         return OperationResult(
             False,
@@ -98,6 +101,7 @@ Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -ErrorAc
                         address_result.details,
                         dns_result.details,
                         cleanup_result.details,
+                        renew_result.details,
                         fallback.stderr,
                     ],
                 )
@@ -114,13 +118,17 @@ Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -ErrorAc
     ) -> OperationResult:
         dns_servers = dns_servers or []
         netsh_result = self._netsh_set_static(interface_name, local_ip, prefix, gateway, dns_servers)
-        cleanup_result = self._cleanup_after_static(interface_name, local_ip)
         if netsh_result.success:
+            cleanup_result = self._cleanup_after_static(interface_name, local_ip)
             details = "\n\n".join(filter(None, [cleanup_result.details]))
             return OperationResult(True, f"{interface_name}에 고정 IP {local_ip}/{prefix}를 적용했습니다.", details)
 
         alias = self.powershell.quote(interface_name)
-        gateway_clause = f"$params['DefaultGateway'] = {self.powershell.quote(gateway)}" if gateway else ""
+        gateway_route_clause = (
+            f"New-NetRoute -InterfaceAlias $alias -DestinationPrefix '0.0.0.0/0' -NextHop {self.powershell.quote(gateway)} -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null"
+            if gateway
+            else ""
+        )
         dns_clause = (
             f"Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses @({', '.join(self.powershell.quote(item) for item in dns_servers)}) -ErrorAction Stop"
             if dns_servers
@@ -143,8 +151,17 @@ $params = @{{
   AddressFamily = 'IPv4'
   ErrorAction = 'Stop'
 }}
-{gateway_clause}
-New-NetIPAddress @params | Out-Null
+$existingIp = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -IPAddress $targetIp -ErrorAction SilentlyContinue |
+  Select-Object -First 1
+if (-not $existingIp -or [int]$existingIp.PrefixLength -ne {int(prefix)}) {{
+  if ($existingIp) {{
+    $existingIp | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+  }}
+  New-NetIPAddress @params | Out-Null
+}}
+Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+  Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+{gateway_route_clause}
 {dns_clause}
 """
         fallback = self.powershell.run(script, timeout=30)
@@ -156,7 +173,7 @@ New-NetIPAddress @params | Out-Null
         return OperationResult(
             False,
             f"{interface_name}에 고정 IP를 적용하지 못했습니다.",
-            "\n\n".join(filter(None, [netsh_result.details, cleanup_result.details, fallback.stderr])),
+            "\n\n".join(filter(None, [netsh_result.details, fallback.stderr])),
         )
 
     def set_dns(self, interface_name: str, dns_servers: list[str]) -> OperationResult:
@@ -301,6 +318,8 @@ try {{
     Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
   Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue | Out-Null
   Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null
+  Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+    Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 }} catch {{
 }}
 """
@@ -308,6 +327,55 @@ try {{
         if result.success:
             return OperationResult(True, "DHCP 후처리 완료")
         return OperationResult(False, "DHCP 후처리 실패", result.stderr or result.stdout)
+
+    def _renew_dhcp_lease(self, interface_name: str) -> OperationResult:
+        alias = self.powershell.quote(interface_name)
+        script = f"""
+$alias = {alias}
+$adapter = Get-NetAdapter -InterfaceAlias $alias -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $adapter) {{
+  Write-Output "어댑터를 찾지 못해 DHCP lease 갱신을 건너뜁니다."
+  return
+}}
+
+$netConfig = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = True" -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.InterfaceIndex -eq $adapter.IfIndex -or $_.Description -eq $adapter.InterfaceDescription }} |
+  Select-Object -First 1
+if ($netConfig) {{
+  Invoke-CimMethod -InputObject $netConfig -MethodName ReleaseDHCPLease -ErrorAction SilentlyContinue | Out-Null
+  Start-Sleep -Milliseconds 500
+  Invoke-CimMethod -InputObject $netConfig -MethodName RenewDHCPLease -ErrorAction SilentlyContinue | Out-Null
+}}
+
+$deadline = (Get-Date).AddSeconds(20)
+$lease = $null
+do {{
+  Start-Sleep -Milliseconds 500
+  $lease = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' }} |
+    Sort-Object @{{ Expression = {{ if ($_.PrefixOrigin -eq 'Dhcp') {{ 0 }} else {{ 1 }} }} }} |
+    Select-Object -First 1
+  if ($lease) {{ break }}
+}} while ((Get-Date) -lt $deadline)
+
+if ($lease) {{
+  "DHCP lease 갱신 완료: $($lease.IPAddress)/$($lease.PrefixLength)"
+}} else {{
+  "DHCP는 활성화됐지만 아직 정상 IPv4 lease를 받지 못했습니다. 케이블, VLAN, DHCP 서버 상태를 확인해 주세요."
+}}
+"""
+        result = self.powershell.run(script, timeout=30)
+        if result.success:
+            details = result.stdout.strip()
+            lease_acquired = "DHCP lease 갱신 완료:" in details
+            message = "DHCP lease 갱신 완료" if lease_acquired else "DHCP lease 미수신"
+            return OperationResult(True, message, details, {"lease_acquired": lease_acquired})
+        return OperationResult(False, "DHCP lease 갱신 실패", result.stderr or result.stdout)
+
+    def _dhcp_apply_message(self, interface_name: str, renew_result: OperationResult) -> str:
+        if isinstance(renew_result.payload, dict) and not renew_result.payload.get("lease_acquired", True):
+            return f"{interface_name}에 DHCP를 적용했지만 정상 IPv4 lease를 아직 받지 못했습니다."
+        return f"{interface_name}에 DHCP를 적용했습니다."
 
     def _cleanup_after_static(self, interface_name: str, target_ip: str) -> OperationResult:
         alias = self.powershell.quote(interface_name)
@@ -329,14 +397,19 @@ try {{
         return OperationResult(False, "고정 IP 후처리 실패", result.stderr or result.stdout)
 
     def _run_netsh(self, command: list[str]) -> OperationResult:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding=windows_console_encoding(),
-            errors="replace",
-            creationflags=no_window_creationflags(),
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding=windows_console_encoding(),
+                errors="replace",
+                timeout=30,
+                creationflags=no_window_creationflags(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            details = (exc.stderr or exc.stdout or "netsh 명령이 30초 안에 완료되지 않았습니다.")
+            return OperationResult(False, "netsh 명령 시간이 초과되었습니다.", str(details))
         details = completed.stderr or completed.stdout
         if completed.returncode == 0:
             return OperationResult(True, "netsh 명령이 완료되었습니다.", details)

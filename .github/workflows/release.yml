@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag name (example: v1.0.6)"
+        description: "Release tag name (example: v1.0.7)"
         required: true
-        default: "v1.0.6"
+        default: "v1.0.7"
       release_name:
         description: "Optional release title"
         required: false
@@ -129,11 +129,11 @@ jobs:
           pip install -r requirements.txt pyinstaller
           choco install innosetup --no-progress -y
 
-      - name: Verify FTP Runtime Dependencies
+      - name: Verify File Transfer Runtime Dependencies
         if: steps.release_guard.outputs.should_release == 'true'
         shell: powershell
         run: |
-          python -c "import pyftpdlib, OpenSSL, paramiko; print('FTP runtime dependencies OK')"
+          python -c "import pyftpdlib, OpenSSL, paramiko, tftpy; print('file transfer runtime dependencies OK')"
 
       - name: Verify Tag Matches App Version
         if: steps.release_guard.outputs.should_release == 'true'

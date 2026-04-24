@@ -4,8 +4,6 @@ from collections import Counter
 from datetime import datetime
 from threading import Event
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,7 +25,9 @@ from app.utils.validators import ValidationError
 
 class IperfDiagnosticsMixin:
     def _build_iperf_tab(self) -> QWidget:
+        self._iperf_listen_addresses: list[str] = []
         page = QWidget()
+        page.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Ignored)
         layout = QVBoxLayout(page)
 
         group = QGroupBox("iperf3")
@@ -70,10 +70,13 @@ class IperfDiagnosticsMixin:
         self.iperf_status_label = QLabel()
         self.iperf_status_label.setWordWrap(False)
         self.iperf_status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.iperf_server_listen_label = QLabel()
+        self.iperf_server_listen_label.setWordWrap(True)
+        self.iperf_server_listen_label.setStyleSheet("color:#1565c0;")
+        self.iperf_server_listen_label.hide()
 
         self.iperf_refresh_button = QPushButton("상태 새로고침")
         self.iperf_manage_button = QPushButton("winget 설치")
-        self.iperf_download_button = QPushButton("패키지 페이지")
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("모드"))
@@ -124,15 +127,17 @@ class IperfDiagnosticsMixin:
         action_row.addSpacing(8)
         action_row.addWidget(self.iperf_refresh_button)
         action_row.addWidget(self.iperf_manage_button)
-        action_row.addWidget(self.iperf_download_button)
         action_row.addSpacing(8)
         action_row.addWidget(self.iperf_status_label, 1)
         action_row.addStretch(1)
         group_layout.addLayout(action_row)
+        group_layout.addWidget(self.iperf_server_listen_label)
 
         layout.addWidget(group, 0)
 
         self.iperf_output = self._output()
+        self.iperf_output.setMinimumHeight(0)
+        self.iperf_output.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         layout.addWidget(self.iperf_output, 1)
 
         self.iperf_mode_combo.currentIndexChanged.connect(self._update_iperf_mode_state)
@@ -140,30 +145,32 @@ class IperfDiagnosticsMixin:
         self.iperf_public_region_combo.currentIndexChanged.connect(self._handle_public_iperf_region_changed)
         self.iperf_public_server_combo.currentIndexChanged.connect(self._handle_public_iperf_selection_changed)
         self.iperf_public_refresh_button.clicked.connect(lambda: self.refresh_public_iperf_servers(force_refresh=True))
+        self.iperf_port_edit.textChanged.connect(lambda _text: self._update_iperf_mode_state())
+        self.iperf_ipv6_check.toggled.connect(lambda _checked: self._update_iperf_mode_state())
         self.iperf_run_button.clicked.connect(self.run_iperf_test)
         self.iperf_cancel_button.clicked.connect(self.cancel_iperf_test)
-        self.iperf_refresh_button.clicked.connect(self.refresh_iperf_availability)
+        self.iperf_refresh_button.clicked.connect(lambda: self.refresh_iperf_availability(deep_check=True))
         self.iperf_manage_button.clicked.connect(self.manage_iperf_install)
-        self.iperf_download_button.clicked.connect(self.open_iperf_download_page)
+        self._reset_public_iperf_server_list()
         self._update_iperf_mode_state()
-        self.refresh_iperf_availability()
-        self._load_cached_public_iperf_servers()
-        self.refresh_public_iperf_servers(force_refresh=False)
         return page
 
-    def _load_cached_public_iperf_servers(self) -> None:
-        cached = self.state.public_iperf_service.load_cached_servers()
-        payload = cached.payload if isinstance(cached.payload, dict) else {}
-        servers = payload.get("servers", [])
-        if isinstance(servers, list) and servers:
-            self._apply_public_iperf_servers(
-                servers,
-                fetched_at=str(payload.get("fetched_at", "") or ""),
-                from_cache=True,
-                stale=bool(payload.get("stale", False)),
-            )
-        else:
-            self._set_public_iperf_info("공개 iperf 서버 캐시가 없습니다. 네트워크 연결 후 자동으로 목록을 가져옵니다.")
+    def _reset_public_iperf_server_list(self) -> None:
+        self.public_iperf_all_servers = []
+        self.public_iperf_servers = []
+        self._public_iperf_fetched_at = ""
+        self._public_iperf_from_cache = False
+        self._public_iperf_stale = True
+        self.iperf_public_region_combo.blockSignals(True)
+        self.iperf_public_region_combo.clear()
+        self.iperf_public_region_combo.addItem("전체 지역", "")
+        self.iperf_public_region_combo.blockSignals(False)
+        self.iperf_public_server_combo.blockSignals(True)
+        self.iperf_public_server_combo.clear()
+        self.iperf_public_server_combo.addItem("목록 갱신을 눌러 공개 서버를 불러오세요.", "")
+        self.iperf_public_server_combo.blockSignals(False)
+        self.iperf_public_server_combo.setToolTip("")
+        self._set_public_iperf_info("목록 갱신을 눌러 공개 서버 목록을 불러오세요.")
 
     def refresh_public_iperf_servers(self, force_refresh: bool = False) -> None:
         if self._public_iperf_refresh_in_progress:
@@ -244,6 +251,14 @@ class IperfDiagnosticsMixin:
         self.iperf_public_region_combo.blockSignals(False)
         self._preferred_public_iperf_region = str(self.iperf_public_region_combo.currentData() or "")
 
+    def _ensure_public_iperf_state_placeholders(self, region: str, server_key: str) -> None:
+        if region and self.iperf_public_region_combo.findData(region) < 0:
+            self.iperf_public_region_combo.addItem(self._region_label(region), region)
+        if server_key and self.iperf_public_server_combo.findData(server_key) < 0:
+            host, separator, port = server_key.partition("|")
+            label = f"{host}:{port}" if separator else server_key
+            self.iperf_public_server_combo.addItem(label, server_key)
+
     def _rebuild_public_iperf_server_combo(self, previous_key: str = "") -> None:
         selected_region = str(self.iperf_public_region_combo.currentData() or "")
         self._preferred_public_iperf_region = selected_region
@@ -307,6 +322,16 @@ class IperfDiagnosticsMixin:
                 return server
         return None
 
+    def _current_public_iperf_state_key(self) -> str:
+        selected = self._selected_public_iperf_server()
+        if selected is not None:
+            return selected.key
+        server = self.iperf_server_edit.text().strip()
+        port = self.iperf_port_edit.text().strip() or "5201"
+        if not server:
+            return ""
+        return f"{server}|{port}"
+
     def _handle_public_iperf_selection_changed(self) -> None:
         selected = self._selected_public_iperf_server()
         if selected:
@@ -334,6 +359,30 @@ class IperfDiagnosticsMixin:
         if checked:
             self._sync_public_iperf_target(overwrite_port=False)
         self._update_iperf_mode_state()
+
+    def _local_iperf_server_addresses(self) -> list[str]:
+        try:
+            adapters = self.state.network_interface_service.list_adapters()
+        except Exception:
+            return []
+
+        addresses: list[str] = []
+        for adapter in adapters:
+            ip = (adapter.ipv4 or "").strip()
+            if not ip or ip.startswith("127.") or ip.startswith("169.254."):
+                continue
+            if ip not in addresses:
+                addresses.append(ip)
+        return addresses
+
+    def _format_iperf_server_listen_text(self, port: int, ipv6: bool, include_local_addresses: bool = False) -> str:
+        wildcard = f"[::]:{port}" if ipv6 else f"0.0.0.0:{port}"
+        addresses = self._iperf_listen_addresses if include_local_addresses else []
+        if addresses:
+            return f"서버 대기 주소 {wildcard} | 접속 가능한 로컬 IPv4: {', '.join(addresses)}"
+        if ipv6:
+            return f"서버 대기 주소 {wildcard} | 모든 IPv6 인터페이스에서 수신"
+        return f"서버 대기 주소 {wildcard} | 모든 IPv4 인터페이스에서 수신"
 
     def _sync_public_iperf_target(self, overwrite_port: bool) -> None:
         if self.iperf_mode_combo.currentData() != "client":
@@ -433,6 +482,18 @@ class IperfDiagnosticsMixin:
         is_client = self.iperf_mode_combo.currentData() == "client"
         use_public = is_client and self.iperf_use_public_server_check.isChecked() and bool(self.public_iperf_servers)
         show_public_section = is_client and self.iperf_use_public_server_check.isChecked()
+        self.iperf_server_listen_label.setVisible(not is_client)
+        if is_client:
+            self.iperf_server_listen_label.clear()
+        else:
+            port_text = self.iperf_port_edit.text().strip() or "5201"
+            try:
+                port_value = int(port_text)
+            except ValueError:
+                port_value = 5201
+            self.iperf_server_listen_label.setText(
+                self._format_iperf_server_listen_text(port_value, self.iperf_ipv6_check.isChecked())
+            )
         self.iperf_use_public_server_check.setEnabled(is_client)
         self.iperf_public_region_combo.setEnabled(is_client and show_public_section and bool(self.public_iperf_all_servers))
         self.iperf_public_server_combo.setEnabled(is_client and use_public and bool(self.public_iperf_servers))
@@ -450,10 +511,39 @@ class IperfDiagnosticsMixin:
         else:
             self.iperf_server_edit.setPlaceholderText("서버 모드에서는 사용하지 않습니다.")
 
-    def refresh_iperf_availability(self) -> None:
+    def refresh_iperf_availability(self, deep_check: bool = True) -> None:
         executable_path, source = self.state.iperf_service.executable_details()
-        manage_state = self.state.iperf_service.managed_install_state()
         self._iperf_available = executable_path is not None
+        if not deep_check:
+            self._iperf_manage_available = self.state.iperf_service.managed_install_supported()
+            self._iperf_manage_enabled = self._iperf_manage_available and not self._iperf_available
+            self.iperf_manage_button.setText("winget 설치" if self._iperf_manage_available else "winget 없음")
+            if self._iperf_available:
+                self.iperf_status_label.clear()
+                self.iperf_status_label.setToolTip(executable_path or "")
+                self.iperf_status_label.hide()
+            else:
+                parts = ["iperf3 없음"]
+                if self._iperf_manage_available:
+                    parts.append("winget 설치 가능")
+                    tooltip = (
+                        "현재 iperf3를 찾지 못했습니다.\n"
+                        "1) 'winget 설치' 버튼으로 현재 사용자 범위에 설치\n"
+                        "2) 시스템 PATH에서 iperf3를 찾을 수 있게 설치 후 '상태 새로고침' 실행"
+                    )
+                else:
+                    parts.append("수동 설치 필요")
+                    tooltip = (
+                        "현재 iperf3를 찾지 못했습니다.\n"
+                        "시스템 PATH에서 iperf3를 찾을 수 있게 설치한 뒤 '상태 새로고침'을 눌러 주세요."
+                    )
+                self.iperf_status_label.setText(" | ".join(parts))
+                self.iperf_status_label.setToolTip(tooltip)
+                self.iperf_status_label.setStyleSheet("color:#a33;")
+                self.iperf_status_label.show()
+            self._set_iperf_running(self.iperf_cancel_button.isEnabled())
+            return
+        manage_state = self.state.iperf_service.managed_install_state()
         self._iperf_manage_available = bool(manage_state["available"])
         self._iperf_manage_enabled = bool(manage_state["button_enabled"])
         self.iperf_manage_button.setText(str(manage_state["action_label"]))
@@ -493,9 +583,6 @@ class IperfDiagnosticsMixin:
             self.iperf_status_label.show()
 
         self._set_iperf_running(self.iperf_cancel_button.isEnabled())
-
-    def open_iperf_download_page(self) -> None:
-        QDesktopServices.openUrl(QUrl(self.state.iperf_service.managed_package_page()))
 
     def manage_iperf_install(self) -> None:
         manage_state = self.state.iperf_service.managed_install_state()
@@ -544,7 +631,7 @@ class IperfDiagnosticsMixin:
         )
 
     def run_iperf_test(self) -> None:
-        self.refresh_iperf_availability()
+        self.refresh_iperf_availability(deep_check=False)
         if not self._iperf_available:
             if self._iperf_manage_available:
                 reply = QMessageBox.question(
@@ -587,6 +674,16 @@ class IperfDiagnosticsMixin:
         self.iperf_output.clear()
         self.iperf_cancel_event = Event()
         self._set_iperf_running(True)
+        if mode == "server":
+            self._iperf_listen_addresses = self._local_iperf_server_addresses()
+            listen_text = self._format_iperf_server_listen_text(
+                port,
+                self.iperf_ipv6_check.isChecked(),
+                include_local_addresses=True,
+            )
+            self.iperf_server_listen_label.setText(listen_text)
+            self.iperf_server_listen_label.show()
+            self.iperf_output.appendPlainText(f"[서버] {listen_text}")
 
         self._start_worker(
             self.state.iperf_service.run_test,

@@ -47,9 +47,9 @@ def test_scp_server_support_message_for_packaged_run_missing_paramiko(tmp_path, 
     assert "최신 설치본" in result.details or "재설치" in result.details
 
 
-def test_release_pipeline_includes_scp_runtime_files():
+def test_release_pipeline_includes_scp_profiles_without_runtime_state():
     project_root = Path(__file__).resolve().parents[1]
     build_script = (project_root / "scripts" / "build_release.ps1").read_text(encoding="utf-8")
 
     assert "scp_profiles.json" in build_script
-    assert "scp_runtime.json" in build_script
+    assert "scp_runtime.json" not in build_script

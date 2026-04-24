@@ -48,10 +48,16 @@ class InterfaceTab(QWidget):
         self.adapters: list[NetworkAdapterInfo] = []
         self._active_workers: list[FunctionWorker] = []
         self._pending_ui_state: dict = {}
+        self._startup_refresh_requested = False
 
         self._build_ui()
         self.state.config_reloaded.connect(self._reload_lists)
         self._reload_lists()
+
+    def start_initial_refresh(self) -> None:
+        if self._startup_refresh_requested:
+            return
+        self._startup_refresh_requested = True
         self.refresh_adapters()
 
     def _build_ui(self) -> None:

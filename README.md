@@ -22,6 +22,7 @@ Windows 10/11 환경에서 현장 네트워크 작업을 빠르게 처리할 수
 - TCPing
 - `nslookup`
 - `tracert` / `pathping`
+- 파일 전송: FTP / FTPS / SFTP / SCP / TFTP 클라이언트와 임시 서버
 - `ipconfig /all`, `route print`, `arp -a`, DNS 캐시 비우기
 - Ping / TCP 결과 CSV 내보내기
 - 선택한 Ping / TCP 로그 개별 저장
@@ -51,6 +52,7 @@ Windows 10/11 환경에서 현장 네트워크 작업을 빠르게 처리할 수
 - 사전 배포(prerelease) 포함 여부 설정
 - UI 상태와 주요 설정 자동 저장
 - 설정 / 로그 폴더 바로 열기
+- 런타임 입력값은 사용자 데이터 경로에 저장되어 배포본 기본 설정과 분리
 
 ## 시스템 요구사항
 

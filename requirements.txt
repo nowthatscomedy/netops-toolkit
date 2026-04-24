@@ -1,6 +1,7 @@
 PySide6>=6.7,<7
 paramiko>=3.5,<4
 pyftpdlib>=2.0,<3
+tftpy>=0.8,<1
 pyOpenSSL>=24,<26
 cryptography>=43,<47
 pytest>=8,<9

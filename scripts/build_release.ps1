@@ -34,11 +34,11 @@ function Resolve-IsccPath {
     throw "ISCC.exe from Inno Setup 6 was not found. Please install Inno Setup first."
 }
 
-function Test-FtpRuntimeDependencies {
-    Write-Host "Verifying FTP runtime dependencies..."
-    & python -c "import pyftpdlib, OpenSSL, paramiko; print('FTP runtime dependencies OK')"
+function Test-FileTransferRuntimeDependencies {
+    Write-Host "Verifying file transfer runtime dependencies..."
+    & python -c "import pyftpdlib, OpenSSL, paramiko, tftpy; print('File transfer runtime dependencies OK')"
     if ($LASTEXITCODE -ne 0) {
-        throw "FTP runtime dependency smoke check failed."
+        throw "File transfer runtime dependency smoke check failed."
     }
 }
 
@@ -76,9 +76,7 @@ New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "config\ip_profiles.json") -Destination $stagingConfigDir -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "config\ftp_profiles.json") -Destination $stagingConfigDir -Force
-Copy-Item -LiteralPath (Join-Path $repoRoot "config\ftp_runtime.json") -Destination $stagingConfigDir -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "config\scp_profiles.json") -Destination $stagingConfigDir -Force
-Copy-Item -LiteralPath (Join-Path $repoRoot "config\scp_runtime.json") -Destination $stagingConfigDir -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "config\vendor_presets.json") -Destination $stagingConfigDir -Force
 
 Set-Content -LiteralPath (Join-Path $stagingLogsDir ".gitkeep") -Value "" -Encoding UTF8
@@ -112,7 +110,7 @@ foreach ($binaryName in $optionalBinaries) {
 }
 
 Write-Host "Building PyInstaller bundle for version $normalizedVersion..."
-Test-FtpRuntimeDependencies
+Test-FileTransferRuntimeDependencies
 & python @pyInstallerArgs
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed."

@@ -26,6 +26,7 @@ class AppPaths:
     ftp_runtime: Path
     scp_profiles: Path
     scp_runtime: Path
+    tftp_runtime: Path
     vendor_presets: Path
     public_iperf_cache: Path
     oui_cache: Path
@@ -111,6 +112,7 @@ def build_app_paths(root_dir: Path | None = None) -> AppPaths:
         ftp_runtime=config_dir / "ftp_runtime.json",
         scp_profiles=config_dir / "scp_profiles.json",
         scp_runtime=config_dir / "scp_runtime.json",
+        tftp_runtime=config_dir / "tftp_runtime.json",
         vendor_presets=config_dir / "vendor_presets.json",
         public_iperf_cache=config_dir / "public_iperf_servers_cache.json",
         oui_cache=config_dir / "oui_cache.json",
@@ -246,6 +248,26 @@ def default_scp_runtime() -> dict[str, Any]:
     }
 
 
+def default_tftp_runtime() -> dict[str, Any]:
+    return {
+        "client": {
+            "host": "",
+            "port": "69",
+            "remote_path": "",
+            "local_folder": "",
+            "local_upload_path": "",
+            "timeout_seconds": "5",
+            "retries": "3",
+        },
+        "server": {
+            "bind_host": "0.0.0.0",
+            "port": "69",
+            "root_folder": "",
+            "read_only": True,
+        },
+    }
+
+
 def ensure_runtime_files(paths: AppPaths) -> None:
     for directory in (paths.config_dir, paths.logs_dir, paths.exports_dir, paths.ftp_keys_dir):
         directory.mkdir(parents=True, exist_ok=True)
@@ -257,6 +279,7 @@ def ensure_runtime_files(paths: AppPaths) -> None:
         paths.ftp_runtime: (default_ftp_runtime(), paths.root / "config" / "ftp_runtime.json"),
         paths.scp_profiles: (default_scp_profiles(), paths.root / "config" / "scp_profiles.json"),
         paths.scp_runtime: (default_scp_runtime(), paths.root / "config" / "scp_runtime.json"),
+        paths.tftp_runtime: (default_tftp_runtime(), paths.root / "config" / "tftp_runtime.json"),
         paths.vendor_presets: (default_vendor_presets(), paths.root / "config" / "vendor_presets.json"),
     }
     for file_path, (default_value, source_path) in defaults.items():

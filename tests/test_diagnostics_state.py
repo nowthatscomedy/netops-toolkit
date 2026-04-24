@@ -172,6 +172,11 @@ class FakeScpServerService:
         return OperationResult(True, "scp server ready")
 
 
+class FakeTftpService:
+    def runtime_support_status(self):
+        return OperationResult(True, "tftp ready")
+
+
 def build_fake_state(tmp_path):
     state = SimpleNamespace(
         thread_pool=SyncThreadPool(),
@@ -194,6 +199,7 @@ def build_fake_state(tmp_path):
         ftp_server_service=FakeFtpServerService(),
         scp_client_service=FakeScpClientService(),
         scp_server_service=FakeScpServerService(),
+        tftp_service=FakeTftpService(),
         ftp_profiles=[
             FtpProfile(
                 name="Lab FTP",
@@ -257,6 +263,23 @@ def build_fake_state(tmp_path):
                 "read_only": True,
             },
         },
+        tftp_runtime={
+            "client": {
+                "host": "tftp.example.com",
+                "port": "1069",
+                "remote_path": "config/startup.cfg",
+                "local_folder": str(tmp_path),
+                "local_upload_path": str(tmp_path / "upload.cfg"),
+                "timeout_seconds": "8",
+                "retries": "4",
+            },
+            "server": {
+                "bind_host": "0.0.0.0",
+                "port": "1069",
+                "root_folder": str(tmp_path),
+                "read_only": True,
+            },
+        },
         ping_service=SimpleNamespace(),
         tcp_check_service=SimpleNamespace(),
     )
@@ -264,6 +287,7 @@ def build_fake_state(tmp_path):
     state.saved_ftp_profiles = None
     state.saved_scp_runtime = None
     state.saved_scp_profiles = None
+    state.saved_tftp_runtime = None
 
     def save_ftp_runtime(runtime):
         state.saved_ftp_runtime = runtime
@@ -279,10 +303,14 @@ def build_fake_state(tmp_path):
         state.saved_scp_profiles = profiles
         state.scp_profiles = profiles
 
+    def save_tftp_runtime(runtime):
+        state.saved_tftp_runtime = runtime
+
     state.save_ftp_runtime = save_ftp_runtime
     state.save_ftp_profiles = save_ftp_profiles
     state.save_scp_runtime = save_scp_runtime
     state.save_scp_profiles = save_scp_profiles
+    state.save_tftp_runtime = save_tftp_runtime
     return state
 
 
@@ -304,22 +332,26 @@ def test_diagnostics_state_save_and_restore_shape(qapp, tmp_path):
     tab.iperf_use_public_server_check.setChecked(True)
     tab.iperf_server_edit.setText("iperf.example.com")
 
-    tab.ftp_inner_tab.setCurrentIndex(1)
+    tab.file_transfer_role_combo.setCurrentIndex(1)
+    tab.file_transfer_mode_combo.setCurrentIndex(1)
 
     saved = tab.save_ui_state()
 
-    assert set(saved) == {"current_tab", "tools", "ping", "tcp", "dns", "trace", "ftp", "iperf", "scp"}
+    assert set(saved) == {"current_tab", "tools", "ping", "tcp", "dns", "trace", "ftp", "iperf"}
     assert saved["tools"]["version"] == 2
     assert saved["tools"]["subnet_ip"] == "192.168.0.10"
     assert saved["tools"]["oui_targets"] == "AP,00:11:22:33:44:55"
-    assert saved["ftp"]["current_subtab"] == 1
-    assert saved["scp"]["current_subtab"] == 0
+    assert saved["ftp"]["role_tab"] == 1
+    assert saved["ftp"]["client_protocol_tab"] == 0
+    assert saved["ftp"]["server_protocol_tab"] == 1
+    assert saved["ftp"]["current_subtab"] == 4
     assert saved["iperf"]["public_server_key"] == "iperf.example.com|5201"
     assert state.saved_ftp_runtime["client"]["host"] == "files.example.com"
     assert state.saved_scp_runtime["client"]["host"] == "scp.example.com"
+    assert state.saved_tftp_runtime["client"]["host"] == "tftp.example.com"
 
     legacy_state = {
-        "current_tab": 0,
+        "current_tab": 7,
         "tools": {
             "version": 1,
             "current_subtab": 2,
@@ -341,7 +373,7 @@ def test_diagnostics_state_save_and_restore_shape(qapp, tmp_path):
         },
         "dns": {"query": "openai.com", "record_type": "AAAA", "server": "8.8.8.8"},
         "trace": {"target": "9.9.9.9", "no_resolve": True},
-        "ftp": {"current_subtab": 1},
+        "ftp": {},
         "iperf": {
             "mode": "client",
             "use_public_server": True,
@@ -360,6 +392,7 @@ def test_diagnostics_state_save_and_restore_shape(qapp, tmp_path):
 
     tab.restore_ui_state(legacy_state)
 
+    assert tab.tab_widget.currentIndex() == 5
     assert tab.tools_inner_tab.currentIndex() == 3
     assert tab.subnet_calc_ip_edit.text() == "10.0.0.5"
     assert tab.arp_subnet_edit.text() == "10.0.0.0/24"
@@ -368,10 +401,10 @@ def test_diagnostics_state_save_and_restore_shape(qapp, tmp_path):
     assert tab.tcp_ports_edit.text() == "80"
     assert tab.dns_query_edit.text() == "openai.com"
     assert tab.trace_no_resolve_check.isChecked() is True
-    assert tab.ftp_inner_tab.currentIndex() == 1
+    assert tab.file_transfer_role_combo.currentIndex() == 1
+    assert tab.file_transfer_mode_combo.currentIndex() == 1
     assert tab.ftp_client_host_edit.text() == "files.example.com"
     assert tab.ftp_server_port_edit.text() == "2222"
-    assert tab.scp_inner_tab.currentIndex() == 1
     assert tab.scp_client_host_edit.text() == "scp.example.com"
     assert tab.scp_server_port_edit.text() == "2223"
     assert tab.iperf_public_region_combo.currentData() == "asia"

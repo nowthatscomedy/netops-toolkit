@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import re
 from typing import Callable
 
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -39,16 +41,28 @@ class WirelessTab(QWidget):
         self._active_workers: list[FunctionWorker] = []
         self._wireless_refresh_running = False
         self._nearby_refresh_running = False
+        self._startup_refresh_requested = False
         self.current_info: WirelessInfo | None = None
         self.previous_info: WirelessInfo | None = None
         self.nearby_access_points: list[NearbyAccessPoint] = []
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._handle_auto_refresh_tick)
+        self.nearby_timer = QTimer(self)
+        self.nearby_timer.timeout.connect(self._handle_nearby_auto_refresh_tick)
 
         self._build_ui()
         QTimer.singleShot(0, self._rebuild_status_grid)
+
+    def start_initial_refresh(self) -> None:
+        if self._startup_refresh_requested:
+            return
+        self._startup_refresh_requested = True
         self.refresh_wireless_info()
-        self.refresh_nearby_access_points()
+        self.refresh_nearby_access_points_quietly()
+        if self.auto_refresh_check.isChecked():
+            self.timer.start(self.interval_spin.value() * 1000)
+        if self.nearby_auto_refresh_check.isChecked():
+            self.nearby_timer.start(self.nearby_interval_spin.value() * 1000)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -130,12 +144,24 @@ class WirelessTab(QWidget):
         self.nearby_refresh_button = QPushButton("주변 AP 새로고침")
         self.nearby_refresh_oui_button = QPushButton("OUI 캐시 갱신")
         self.nearby_summary_label = QLabel("스캔 전")
+        self.nearby_auto_refresh_check = QCheckBox("자동 갱신")
+        self.nearby_interval_spin = QSpinBox()
+        self.nearby_interval_spin.setRange(5, 300)
+        self.nearby_interval_spin.setValue(int(self.state.app_config.get("wireless_nearby_refresh_interval_sec", 30)))
+        self.nearby_interval_spin.setCorrectionMode(QAbstractSpinBox.CorrectToNearestValue)
+        self.nearby_summary_label.setWordWrap(True)
+        self.nearby_summary_label.setMinimumWidth(0)
+        self.nearby_summary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.nearby_summary_label.setStyleSheet("color:#666;")
         nearby_controls.addWidget(self.nearby_refresh_button)
         nearby_controls.addWidget(self.nearby_refresh_oui_button)
+        nearby_controls.addSpacing(8)
+        nearby_controls.addWidget(self.nearby_auto_refresh_check)
+        nearby_controls.addWidget(QLabel("주기(초)"))
+        nearby_controls.addWidget(self.nearby_interval_spin)
         nearby_controls.addStretch(1)
-        nearby_controls.addWidget(self.nearby_summary_label, 2)
         nearby_layout.addLayout(nearby_controls)
+        nearby_layout.addWidget(self.nearby_summary_label)
 
         nearby_filter_row = QHBoxLayout()
         nearby_filter_row.addWidget(QLabel("검색"))
@@ -189,7 +215,9 @@ class WirelessTab(QWidget):
         self.refresh_button.clicked.connect(self.refresh_wireless_info)
         self.auto_refresh_check.toggled.connect(self._toggle_auto_refresh)
         self.interval_spin.valueChanged.connect(self._handle_interval_change)
-        self.nearby_refresh_button.clicked.connect(self.refresh_nearby_access_points)
+        self.nearby_refresh_button.clicked.connect(self.refresh_nearby_access_points_quietly)
+        self.nearby_auto_refresh_check.toggled.connect(self._toggle_nearby_auto_refresh)
+        self.nearby_interval_spin.valueChanged.connect(self._handle_nearby_interval_change)
         self.nearby_refresh_oui_button.clicked.connect(self.refresh_nearby_oui_cache)
         self.nearby_search_edit.textChanged.connect(self._apply_nearby_view)
         self.nearby_band_filter.currentIndexChanged.connect(self._apply_nearby_view)
@@ -251,7 +279,9 @@ class WirelessTab(QWidget):
 
     def _handle_auto_refresh_tick(self) -> None:
         self.refresh_wireless_info()
-        self.refresh_nearby_access_points()
+
+    def _handle_nearby_auto_refresh_tick(self) -> None:
+        self.refresh_nearby_access_points_quietly()
 
     def refresh_wireless_info(self) -> None:
         if self._wireless_refresh_running:
@@ -264,11 +294,16 @@ class WirelessTab(QWidget):
             error_title="무선 상태 조회 실패",
         )
 
+    def refresh_nearby_access_points_quietly(self) -> None:
+        self.refresh_nearby_access_points()
+        if self._nearby_refresh_running:
+            self._update_nearby_summary(self._filtered_nearby_access_points())
+
     def refresh_nearby_access_points(self) -> None:
         if self._nearby_refresh_running:
             return
         self._nearby_refresh_running = True
-        self.nearby_summary_label.setText("주변 AP를 스캔하는 중...")
+        self.nearby_refresh_button.setEnabled(False)
         self._start_worker(
             self.state.wireless_service.scan_nearby_access_points,
             on_result=self._update_nearby_access_points,
@@ -504,7 +539,8 @@ class WirelessTab(QWidget):
             self._append_change_log(f"신호 저하: {previous.signal_percent}% -> {current.signal_percent}%", QColor("#b71c1c"))
 
     def _append_change_log(self, message: str, color: QColor | None = None) -> None:
-        item = QListWidgetItem(message)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        item = QListWidgetItem(f"[{timestamp}] {message}")
         if color:
             item.setForeground(color)
         self.change_log.insertItem(0, item)
@@ -520,17 +556,32 @@ class WirelessTab(QWidget):
         if self.auto_refresh_check.isChecked():
             self.timer.start(value * 1000)
 
+    def _toggle_nearby_auto_refresh(self, enabled: bool) -> None:
+        if enabled:
+            self._handle_nearby_auto_refresh_tick()
+            self.nearby_timer.start(self.nearby_interval_spin.value() * 1000)
+        else:
+            self.nearby_timer.stop()
+
+    def _handle_nearby_interval_change(self, value: int) -> None:
+        if self.nearby_auto_refresh_check.isChecked():
+            self.nearby_timer.start(value * 1000)
+
     def _set_refresh_running(self, refresh_type: str, running: bool) -> None:
         if refresh_type == "wireless":
             self._wireless_refresh_running = running
             return
         if refresh_type == "nearby":
             self._nearby_refresh_running = running
+            if hasattr(self, "nearby_refresh_button"):
+                self.nearby_refresh_button.setEnabled(not running)
 
     def save_ui_state(self) -> dict:
         return {
             "auto_refresh": self.auto_refresh_check.isChecked(),
             "interval_sec": self.interval_spin.value(),
+            "nearby_auto_refresh": self.nearby_auto_refresh_check.isChecked(),
+            "nearby_interval_sec": self.nearby_interval_spin.value(),
             "nearby_search": self.nearby_search_edit.text().strip(),
             "nearby_band_filter": str(self.nearby_band_filter.currentData() or "all"),
             "nearby_security_filter": str(self.nearby_security_filter.currentData() or "all"),
@@ -545,12 +596,23 @@ class WirelessTab(QWidget):
 
         interval_sec = int(state.get("interval_sec", self.interval_spin.value()) or self.interval_spin.value())
         self.interval_spin.setValue(max(1, min(30, interval_sec)))
+        nearby_interval_sec = int(
+            state.get("nearby_interval_sec", self.nearby_interval_spin.value()) or self.nearby_interval_spin.value()
+        )
+        self.nearby_interval_spin.setValue(max(5, min(300, nearby_interval_sec)))
         self.nearby_search_edit.setText(str(state.get("nearby_search", "") or ""))
         self._set_combo_data(self.nearby_band_filter, str(state.get("nearby_band_filter", "all") or "all"))
         self._set_combo_data(self.nearby_security_filter, str(state.get("nearby_security_filter", "all") or "all"))
         self._set_combo_data(self.nearby_sort_combo, str(state.get("nearby_sort", "signal_desc") or "signal_desc"))
         self.nearby_connected_only_check.setChecked(bool(state.get("nearby_connected_only", False)))
+        self.auto_refresh_check.blockSignals(True)
         self.auto_refresh_check.setChecked(bool(state.get("auto_refresh", False)))
+        self.auto_refresh_check.blockSignals(False)
+        self.timer.stop()
+        self.nearby_auto_refresh_check.blockSignals(True)
+        self.nearby_auto_refresh_check.setChecked(bool(state.get("nearby_auto_refresh", False)))
+        self.nearby_auto_refresh_check.blockSignals(False)
+        self.nearby_timer.stop()
         self._apply_nearby_view()
 
     def _set_combo_data(self, combo: QComboBox, value: str) -> None:

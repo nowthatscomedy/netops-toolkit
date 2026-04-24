@@ -67,6 +67,7 @@ def test_parse_netsh_wlan_output_english():
     assert info.interface_name == "Wi-Fi"
     assert info.ssid == "TestNet"
     assert info.bssid == "aa:bb:cc:dd:ee:ff"
+    assert info.radio_type == "802.11ax"
     assert info.channel == "149"
     assert info.signal_percent == 88
     assert info.band == "5 GHz"
@@ -77,6 +78,7 @@ def test_parse_netsh_wlan_output_korean():
     assert info.interface_name == "Wi-Fi"
     assert info.ssid == "테스트망"
     assert info.bssid == "11:22:33:44:55:66"
+    assert info.radio_type == "802.11ax"
     assert info.channel == "44"
     assert info.signal_percent == 75
     assert info.band == "5 GHz"
@@ -89,6 +91,7 @@ def test_parse_netsh_wlan_networks_output_english():
     assert ap.interface_name == "Wi-Fi"
     assert ap.ssid == "TestNet"
     assert ap.bssid == "aa:bb:cc:dd:ee:ff"
+    assert ap.radio_standard == "802.11ax"
     assert ap.signal_percent == 88
     assert ap.channel == "149"
     assert ap.connected_stations == 12
@@ -102,7 +105,27 @@ def test_parse_netsh_wlan_networks_output_korean():
     assert ap.interface_name == "Wi-Fi"
     assert ap.ssid == "테스트망"
     assert ap.bssid == "11:22:33:44:55:66"
+    assert ap.radio_standard == "802.11ax"
     assert ap.signal_percent == 75
     assert ap.channel == "44"
     assert ap.connected_stations == 3
     assert ap.channel_utilization_percent == 12
+
+
+def test_parse_netsh_wlan_networks_output_extracts_80211_pattern_without_known_label():
+    raw_output = """
+Interface name : Wi-Fi
+
+SSID 1 : TestNet
+    Network type            : Infrastructure
+    Authentication          : WPA2-Personal
+    Encryption              : CCMP
+    BSSID 1                 : aa:bb:cc:dd:ee:ff
+         Signal             : 88%
+         Wireless mode      : 802.11 ax
+         Band               : 5 GHz
+         Channel            : 149
+"""
+    aps = parse_netsh_wlan_networks_output(raw_output)
+    assert len(aps) == 1
+    assert aps[0].radio_standard == "802.11ax"

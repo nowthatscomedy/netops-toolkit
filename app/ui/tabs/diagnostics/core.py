@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -33,6 +34,7 @@ from app.ui.tabs.diagnostics.ping import PingDiagnosticsMixin
 from app.ui.tabs.diagnostics.result_dock import ResultDockMixin
 from app.ui.tabs.diagnostics.scp import ScpDiagnosticsMixin
 from app.ui.tabs.diagnostics.tcp import TcpDiagnosticsMixin
+from app.ui.tabs.diagnostics.tftp import TftpDiagnosticsMixin
 from app.ui.tabs.diagnostics.tools import ToolsDiagnosticsMixin
 from app.ui.tabs.diagnostics.trace import TraceDiagnosticsMixin
 from app.utils.file_utils import timestamped_export_path
@@ -49,6 +51,7 @@ class DiagnosticsTab(
     FtpDiagnosticsMixin,
     IperfDiagnosticsMixin,
     ScpDiagnosticsMixin,
+    TftpDiagnosticsMixin,
     QWidget,
 ):
     result_dock_visibility_changed = Signal(str, bool)
@@ -85,6 +88,8 @@ class DiagnosticsTab(
         self.ftp_server_cancel_event: Event | None = None
         self.scp_client_cancel_event: Event | None = None
         self.scp_server_cancel_event: Event | None = None
+        self.tftp_client_cancel_event: Event | None = None
+        self.tftp_server_cancel_event: Event | None = None
 
         self.ping_row_map: dict[tuple[str, str], int] = {}
         self.tcp_row_map: dict[tuple[str, str, int], int] = {}
@@ -105,22 +110,55 @@ class DiagnosticsTab(
         self._public_iperf_fetched_at = ""
         self._public_iperf_from_cache = False
         self._public_iperf_stale = True
+        self._startup_activated = False
+        self._tools_startup_requested = False
+        self._iperf_startup_requested = False
 
         self.fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self._build_ui()
+        self.tab_widget.currentChanged.connect(self._handle_subtab_changed)
+
+    def start_initial_refresh(self) -> None:
+        self._startup_activated = True
+        self._start_subtab_initialization(self.tab_widget.currentIndex())
+
+    def _handle_subtab_changed(self, index: int) -> None:
+        if not self._startup_activated:
+            return
+        self._start_subtab_initialization(index)
+
+    def _start_subtab_initialization(self, index: int) -> None:
+        if index == 0:
+            self._initialize_tools_tab()
+            return
+        if index == 6:
+            self._initialize_iperf_tab()
+
+    def _initialize_tools_tab(self) -> None:
+        if self._tools_startup_requested:
+            return
+        self._tools_startup_requested = True
         self.refresh_arp_subnets()
+
+    def _initialize_iperf_tab(self) -> None:
+        if self._iperf_startup_requested:
+            return
+        self._iperf_startup_requested = True
+        self.refresh_iperf_availability(deep_check=False)
+        self._reset_public_iperf_server_list()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         self.tab_widget = QTabWidget()
+        self.tab_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         self.tab_widget.addTab(self._build_tools_tab(), "진단 도구")
         self.tab_widget.addTab(self._build_ping_tab(), "Ping")
         self.tab_widget.addTab(self._build_tcp_tab(), "TCPing")
         self.tab_widget.addTab(self._build_dns_tab(), "nslookup")
         self.tab_widget.addTab(self._build_trace_tab(), "tracert / pathping")
-        self.tab_widget.addTab(self._build_ftp_tab(), "FTP")
+        self.tab_widget.addTab(self._build_ftp_tab(), "파일 전송")
         self.tab_widget.addTab(self._build_iperf_tab(), "iperf3")
-        self.tab_widget.addTab(self._build_scp_tab(), "SCP")
         layout.addWidget(self.tab_widget)
 
     def _setup_table(self, table: QTableWidget) -> None:
@@ -304,6 +342,8 @@ class DiagnosticsTab(
             self.state.save_ftp_runtime(self._collect_ftp_runtime_state())
         if hasattr(self, "_collect_scp_runtime_state") and hasattr(self.state, "save_scp_runtime"):
             self.state.save_scp_runtime(self._collect_scp_runtime_state())
+        if hasattr(self, "_collect_tftp_runtime_state") and hasattr(self.state, "save_tftp_runtime"):
+            self.state.save_tftp_runtime(self._collect_tftp_runtime_state())
         return {
             "current_tab": self.tab_widget.currentIndex(),
             "tools": {
@@ -340,14 +380,18 @@ class DiagnosticsTab(
                 "target": self.trace_target_edit.text().strip(),
                 "no_resolve": self.trace_no_resolve_check.isChecked(),
             },
-            "ftp": {
+            "ftp": self._build_ftp_tab_state() if hasattr(self, "_build_ftp_tab_state") else {
                 "current_subtab": self.ftp_inner_tab.currentIndex(),
             },
             "iperf": {
                 "mode": str(self.iperf_mode_combo.currentData() or ""),
                 "use_public_server": self.iperf_use_public_server_check.isChecked(),
                 "public_region": str(self.iperf_public_region_combo.currentData() or ""),
-                "public_server_key": str(self.iperf_public_server_combo.currentData() or ""),
+                "public_server_key": (
+                    self._current_public_iperf_state_key()
+                    if hasattr(self, "_current_public_iperf_state_key")
+                    else str(self.iperf_public_server_combo.currentData() or "")
+                ),
                 "server": self.iperf_server_edit.text().strip(),
                 "port": self.iperf_port_edit.text().strip(),
                 "streams": self.iperf_streams_edit.text().strip(),
@@ -355,9 +399,6 @@ class DiagnosticsTab(
                 "reverse": self.iperf_reverse_check.isChecked(),
                 "udp": self.iperf_udp_check.isChecked(),
                 "ipv6": self.iperf_ipv6_check.isChecked(),
-            },
-            "scp": {
-                "current_subtab": self.scp_inner_tab.currentIndex(),
             },
         }
 
@@ -367,6 +408,8 @@ class DiagnosticsTab(
             return
 
         current_tab = int(state.get("current_tab", 0) or 0)
+        if current_tab == 7:
+            current_tab = 5
         if 0 <= current_tab < self.tab_widget.count():
             self.tab_widget.setCurrentIndex(current_tab)
 
@@ -417,9 +460,16 @@ class DiagnosticsTab(
         self.trace_no_resolve_check.setChecked(bool(trace_state.get("no_resolve", False)))
 
         ftp_state = state.get("ftp", {})
-        ftp_subtab = int(ftp_state.get("current_subtab", 0) or 0)
-        if 0 <= ftp_subtab < self.ftp_inner_tab.count():
-            self.ftp_inner_tab.setCurrentIndex(ftp_subtab)
+        scp_state = state.get("scp", {})
+        if hasattr(self, "_restore_ftp_tab_state"):
+            self._restore_ftp_tab_state(ftp_state, scp_state)
+        else:
+            ftp_subtab = int(ftp_state.get("current_subtab", 0) or 0)
+            if "current_subtab" not in ftp_state:
+                if isinstance(scp_state, dict) and "current_subtab" in scp_state:
+                    ftp_subtab = 2 + int(scp_state.get("current_subtab", 0) or 0)
+            if 0 <= ftp_subtab < self.ftp_inner_tab.count():
+                self.ftp_inner_tab.setCurrentIndex(ftp_subtab)
 
         iperf_state = state.get("iperf", {})
         iperf_mode = str(iperf_state.get("mode", "") or "")
@@ -430,6 +480,10 @@ class DiagnosticsTab(
         self._preferred_public_iperf_region = str(iperf_state.get("public_region", "") or "")
         public_server_key = str(iperf_state.get("public_server_key", "") or "")
         self._preferred_public_iperf_key = public_server_key
+        self.iperf_public_region_combo.blockSignals(True)
+        self.iperf_public_server_combo.blockSignals(True)
+        if hasattr(self, "_ensure_public_iperf_state_placeholders"):
+            self._ensure_public_iperf_state_placeholders(self._preferred_public_iperf_region, public_server_key)
         if self._preferred_public_iperf_region:
             region_index = self.iperf_public_region_combo.findData(self._preferred_public_iperf_region)
             if region_index >= 0:
@@ -438,6 +492,8 @@ class DiagnosticsTab(
             index = self.iperf_public_server_combo.findData(public_server_key)
             if index >= 0:
                 self.iperf_public_server_combo.setCurrentIndex(index)
+        self.iperf_public_server_combo.blockSignals(False)
+        self.iperf_public_region_combo.blockSignals(False)
         self.iperf_use_public_server_check.setChecked(bool(iperf_state.get("use_public_server", False)))
         self.iperf_server_edit.setText(str(iperf_state.get("server", "") or ""))
         self.iperf_port_edit.setText(str(iperf_state.get("port", self.iperf_port_edit.text()) or ""))
@@ -448,11 +504,6 @@ class DiagnosticsTab(
         self.iperf_ipv6_check.setChecked(bool(iperf_state.get("ipv6", False)))
         self._sync_public_iperf_target(overwrite_port=not bool(self.iperf_port_edit.text().strip()))
         self._update_iperf_mode_state()
-
-        scp_state = state.get("scp", {})
-        scp_subtab = int(scp_state.get("current_subtab", 0) or 0)
-        if 0 <= scp_subtab < self.scp_inner_tab.count():
-            self.scp_inner_tab.setCurrentIndex(scp_subtab)
 
     def _start_worker(
         self,

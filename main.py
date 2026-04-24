@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import sys
 
 from PySide6.QtGui import QIcon
@@ -11,7 +12,17 @@ from app.utils.file_utils import resolve_asset_path
 from app.version import __version__
 
 
+def _set_windows_app_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("NetOpsToolkit.DesktopApp")
+    except Exception:
+        pass
+
+
 def main() -> int:
+    _set_windows_app_id()
     app = QApplication(sys.argv)
     app.setApplicationName("NetOps Toolkit")
     app.setOrganizationName("NetOps Toolkit")
@@ -25,6 +36,7 @@ def main() -> int:
     if app_icon_path.exists():
         window.setWindowIcon(QIcon(str(app_icon_path)))
     window.show()
+    window.activate_startup_loading()
 
     if not state.paths.config_dir.exists():
         QMessageBox.warning(

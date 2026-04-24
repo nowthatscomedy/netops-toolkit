@@ -6,7 +6,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -21,7 +20,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -33,34 +31,10 @@ from app.utils.file_utils import open_in_explorer, timestamped_export_path
 
 
 class ScpDiagnosticsMixin:
-    def _build_scp_tab(self) -> QWidget:
-        self._scp_transfer_row_map: dict[tuple[str, str, str, str], int] = {}
-        self._scp_client_logs: list[str] = []
-        self._scp_server_logs: list[str] = []
-        self._scp_server_runtime: ScpServerRuntime | None = None
-        self._scp_client_busy = False
-        self._scp_server_running = False
-
-        page = QWidget()
-        layout = QVBoxLayout(page)
-
-        self.scp_inner_tab = QTabWidget()
-        self.scp_inner_tab.addTab(self._build_scp_client_page(), "클라이언트")
-        self.scp_inner_tab.addTab(self._build_scp_server_page(), "임시 서버")
-        self.scp_inner_tab.currentChanged.connect(self._handle_scp_tab_changed)
-        layout.addWidget(self.scp_inner_tab)
-
-        self._reload_scp_profiles()
-        self._restore_scp_runtime_state()
-        self._set_scp_client_busy(False)
-        self._set_scp_server_running(False)
-        self._refresh_scp_client_support_notice()
-        self._refresh_scp_server_support_notice()
-        return page
-
     def _build_scp_client_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         connection_group = QGroupBox("SCP 클라이언트")
         connection_layout = QVBoxLayout(connection_group)
@@ -142,21 +116,24 @@ class ScpDiagnosticsMixin:
         self.scp_client_support_label = QLabel("")
         self.scp_client_fingerprint_label.setWordWrap(True)
         self.scp_client_support_label.setWordWrap(True)
+        self.scp_client_fingerprint_label.hide()
+        self.scp_client_support_label.hide()
         connection_layout.addWidget(self.scp_client_status_label)
         connection_layout.addWidget(self.scp_client_fingerprint_label)
         connection_layout.addWidget(self.scp_client_support_label)
+        self._set_compact_transfer_group(connection_group)
         layout.addWidget(connection_group)
 
-        bottom_splitter = QSplitter(Qt.Vertical)
-
-        result_group = QGroupBox("전송 결과")
-        result_layout = QVBoxLayout(result_group)
+        self.scp_client_activity_splitter = QGroupBox("전송 결과 / 실시간 로그")
+        result_layout = QVBoxLayout(self.scp_client_activity_splitter)
         self.scp_transfer_table = QTableWidget(0, 8)
         self.scp_transfer_table.setHorizontalHeaderLabels(
             ["시각", "작업", "원본", "대상", "크기", "전송량", "소요시간", "상태"]
         )
         self._setup_table(self.scp_transfer_table)
         self._set_stretch_columns(self.scp_transfer_table, 2, 3)
+        self.scp_transfer_table.setMinimumHeight(130)
+        self.scp_transfer_table.setMaximumHeight(180)
         result_layout.addWidget(self.scp_transfer_table)
 
         result_button_row = QHBoxLayout()
@@ -166,15 +143,15 @@ class ScpDiagnosticsMixin:
         result_button_row.addWidget(self.scp_client_log_export_button)
         result_button_row.addStretch(1)
         result_layout.addLayout(result_button_row)
-        bottom_splitter.addWidget(result_group)
-
-        log_group = QGroupBox("실시간 로그")
-        log_layout = QVBoxLayout(log_group)
+        result_layout.addWidget(QLabel("실시간 로그"))
         self.scp_client_log_output = self._output()
-        log_layout.addWidget(self.scp_client_log_output)
-        bottom_splitter.addWidget(log_group)
-        bottom_splitter.setSizes([220, 170])
-        layout.addWidget(bottom_splitter, 1)
+        self.scp_client_log_output.setPlaceholderText("업로드 또는 다운로드를 실행하면 로그가 여기에 표시됩니다.")
+        self.scp_client_log_output.setMinimumHeight(110)
+        self.scp_client_log_output.setMaximumHeight(150)
+        result_layout.addWidget(self.scp_client_log_output)
+        self._set_compact_transfer_group(self.scp_client_activity_splitter)
+        layout.addWidget(self.scp_client_activity_splitter)
+        layout.addStretch(1)
 
         self.scp_profile_combo.currentIndexChanged.connect(self._apply_selected_scp_profile)
         self.scp_profile_add_button.clicked.connect(self._add_scp_profile)
@@ -191,6 +168,7 @@ class ScpDiagnosticsMixin:
     def _build_scp_server_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         server_group = QGroupBox("임시 SCP 서버")
         server_layout = QVBoxLayout(server_group)
@@ -238,16 +216,15 @@ class ScpDiagnosticsMixin:
         self.scp_server_start_button = QPushButton("시작")
         self.scp_server_stop_button = QPushButton("중지")
         self.scp_server_open_root_button = QPushButton("루트 폴더 열기")
-        self.scp_server_copy_info_button = QPushButton("접속 정보 복사")
         button_row.addWidget(self.scp_server_start_button)
         button_row.addWidget(self.scp_server_stop_button)
         button_row.addWidget(self.scp_server_open_root_button)
-        button_row.addWidget(self.scp_server_copy_info_button)
         button_row.addStretch(1)
         server_layout.addLayout(button_row)
 
         self.scp_server_support_label = QLabel("")
         self.scp_server_support_label.setWordWrap(True)
+        self.scp_server_support_label.hide()
         server_layout.addWidget(self.scp_server_support_label)
 
         status_form = QFormLayout()
@@ -261,24 +238,29 @@ class ScpDiagnosticsMixin:
         status_form.addRow("세션 수", self.scp_server_sessions_label)
         status_form.addRow("호스트 키 지문", self.scp_server_fingerprint_label)
         server_layout.addLayout(status_form)
+        self._set_compact_transfer_group(server_group)
         layout.addWidget(server_group)
 
-        log_group = QGroupBox("서버 로그")
-        log_layout = QVBoxLayout(log_group)
+        self.scp_server_log_group = QGroupBox("서버 로그")
+        log_layout = QVBoxLayout(self.scp_server_log_group)
         self.scp_server_log_output = self._output()
+        self.scp_server_log_output.setPlaceholderText("서버를 시작하면 접속 및 전송 로그가 여기에 표시됩니다.")
+        self.scp_server_log_output.setMinimumHeight(120)
+        self.scp_server_log_output.setMaximumHeight(170)
         log_layout.addWidget(self.scp_server_log_output)
         log_button_row = QHBoxLayout()
         self.scp_server_log_export_button = QPushButton("서버 로그 TXT 저장")
         log_button_row.addWidget(self.scp_server_log_export_button)
         log_button_row.addStretch(1)
         log_layout.addLayout(log_button_row)
-        layout.addWidget(log_group, 1)
+        self._set_compact_transfer_group(self.scp_server_log_group)
+        layout.addWidget(self.scp_server_log_group)
+        layout.addStretch(1)
 
         self.scp_server_root_browse_button.clicked.connect(self._choose_scp_server_root)
         self.scp_server_start_button.clicked.connect(self._start_scp_server)
         self.scp_server_stop_button.clicked.connect(self._stop_scp_server)
         self.scp_server_open_root_button.clicked.connect(self._open_scp_server_root)
-        self.scp_server_copy_info_button.clicked.connect(self._copy_scp_server_info)
         self.scp_server_log_export_button.clicked.connect(self._export_scp_server_logs)
         self.scp_server_readonly_combo.currentIndexChanged.connect(self._refresh_scp_server_support_notice)
         return page
@@ -353,10 +335,6 @@ class ScpDiagnosticsMixin:
         self.state.save_scp_profiles(profiles)
         self._reload_scp_profiles()
 
-    def _handle_scp_tab_changed(self, _index: int) -> None:
-        self._refresh_scp_client_support_notice()
-        self._refresh_scp_server_support_notice()
-
     def _refresh_scp_client_support_notice(self) -> None:
         support = self.state.scp_client_service.runtime_support_status()
         self._apply_scp_support_label(self.scp_client_support_label, support)
@@ -366,8 +344,13 @@ class ScpDiagnosticsMixin:
         self._apply_scp_support_label(self.scp_server_support_label, support)
 
     def _apply_scp_support_label(self, label: QLabel, support: OperationResult) -> None:
+        if support.success:
+            label.clear()
+            label.hide()
+            return
         label.setText(support.message)
-        label.setStyleSheet(f"color: {'#2e7d32' if support.success else '#b71c1c'};")
+        label.setStyleSheet("color:#b71c1c;")
+        label.show()
 
     def _show_scp_support_warning(self, title: str, support: OperationResult) -> None:
         text = support.message
@@ -468,6 +451,7 @@ class ScpDiagnosticsMixin:
             if message:
                 self._scp_client_logs.append(message)
                 self.scp_client_log_output.appendPlainText(message)
+                self._update_scp_client_activity_visibility()
             return
         if kind == "transfer":
             result = event.get("result")
@@ -480,6 +464,8 @@ class ScpDiagnosticsMixin:
         self.scp_client_status_label.setText(result.message)
         self.scp_client_fingerprint_label.setText(fingerprint or "-")
         self.scp_client_password_edit.clear()
+        self.scp_client_fingerprint_label.setVisible(fingerprint.strip() not in {"", "-"})
+        self._update_scp_client_activity_visibility()
 
     def _upsert_scp_transfer_result(self, result: ScpTransferResult) -> None:
         key = (result.timestamp, result.action, result.source_path, result.target_path)
@@ -570,6 +556,7 @@ class ScpDiagnosticsMixin:
             if message:
                 self._scp_server_logs.append(message)
                 self.scp_server_log_output.appendPlainText(message)
+                self._update_scp_server_log_visibility()
             return
         if kind == "server_runtime":
             runtime = event.get("runtime")
@@ -580,6 +567,7 @@ class ScpDiagnosticsMixin:
     def _finish_scp_server_job(self, result: OperationResult) -> None:
         self.scp_server_state_label.setText(result.message)
         self.scp_server_cancel_event = None
+        self._update_scp_server_log_visibility()
 
     def _stop_scp_server(self) -> None:
         if self.scp_server_cancel_event is not None:
@@ -600,24 +588,6 @@ class ScpDiagnosticsMixin:
             QMessageBox.warning(self, "경로 필요", "먼저 공유 루트 폴더를 지정해 주세요.")
             return
         open_in_explorer(Path(root_path))
-
-    def _copy_scp_server_info(self) -> None:
-        runtime = self._scp_server_runtime
-        if runtime is None:
-            QMessageBox.warning(self, "서버 미실행", "먼저 SCP 서버를 시작해 주세요.")
-            return
-        text = "\n".join(
-            [
-                "프로토콜: SCP",
-                f"주소: {runtime.bind_host}:{runtime.port}",
-                f"계정: {runtime.username}",
-                f"루트: {runtime.root_folder}",
-                f"읽기 전용: {'예' if runtime.read_only else '아니오'}",
-                f"호스트 키 지문: {runtime.host_key_fingerprint or '-'}",
-            ]
-        )
-        QApplication.clipboard().setText(text)
-        QMessageBox.information(self, "복사 완료", "SCP 접속 정보를 클립보드에 복사했습니다.")
 
     def _update_scp_server_runtime_labels(self, runtime: ScpServerRuntime) -> None:
         self.scp_server_state_label.setText("SCP 실행 중")
@@ -651,6 +621,7 @@ class ScpDiagnosticsMixin:
         self.scp_client_upload_button.setEnabled(not busy)
         self.scp_client_download_button.setEnabled(not busy)
         self.scp_client_cancel_button.setEnabled(busy)
+        self._update_scp_client_activity_visibility()
 
     def _set_scp_server_running(self, running: bool) -> None:
         self._scp_server_running = running
@@ -663,6 +634,14 @@ class ScpDiagnosticsMixin:
         self.scp_server_username_edit.setEnabled(not running)
         self.scp_server_password_edit.setEnabled(not running)
         self.scp_server_readonly_combo.setEnabled(not running)
+        self._update_scp_server_log_visibility()
+
+    def _update_scp_client_activity_visibility(self) -> None:
+        self.scp_transfer_export_button.setEnabled(self.scp_transfer_table.rowCount() > 0)
+        self.scp_client_log_export_button.setEnabled(bool(self._scp_client_logs))
+
+    def _update_scp_server_log_visibility(self) -> None:
+        self.scp_server_log_export_button.setEnabled(bool(self._scp_server_logs))
 
     def _cancel_scp_client_job(self) -> None:
         if self.scp_client_cancel_event is not None:

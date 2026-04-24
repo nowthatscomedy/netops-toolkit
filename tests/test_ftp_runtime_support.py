@@ -52,11 +52,11 @@ def test_release_pipeline_checks_ftp_runtime_dependencies():
     build_script = (project_root / "scripts" / "build_release.ps1").read_text(encoding="utf-8")
     workflow = (project_root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "import pyftpdlib, OpenSSL, paramiko" in build_script
+    assert "import pyftpdlib, OpenSSL, paramiko, tftpy" in build_script
     assert "--add-data=" in build_script
     assert "--add-binary=" in build_script
     assert ";$normalizedDestination" in build_script
     assert "ftp_profiles.json" in build_script
-    assert "ftp_runtime.json" in build_script
-    assert "Verify FTP Runtime Dependencies" in workflow
-    assert "import pyftpdlib, OpenSSL, paramiko" in workflow
+    assert "ftp_runtime.json" not in build_script
+    assert "Verify File Transfer Runtime Dependencies" in workflow
+    assert "import pyftpdlib, OpenSSL, paramiko, tftpy" in workflow

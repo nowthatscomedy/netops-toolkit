@@ -64,6 +64,25 @@ def band_from_channel(channel_text: str, radio_type: str = "") -> str:
     return "알 수 없음"
 
 
+def normalize_radio_standard(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+
+    match = re.search(r"802\.11\s*([0-9A-Za-z/+\-_.]+)", text, re.IGNORECASE)
+    if match:
+        return f"802.11{match.group(1).strip()}"
+
+    return re.sub(r"\s+", " ", text)
+
+
+def extract_radio_standard(raw_text: str) -> str:
+    match = re.search(r"802\.11\s*([0-9A-Za-z/+\-_.]+)", raw_text or "", re.IGNORECASE)
+    if not match:
+        return ""
+    return f"802.11{match.group(1).strip()}"
+
+
 def _normalize_label(label: str) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]+", "", label.strip().lower())
 
@@ -81,6 +100,13 @@ INTERFACE_FIELD_MAP: dict[str, str] = {
     "apbssid": "bssid",
     "radiotype": "radio_type",
     "phytype": "radio_type",
+    "라디오종류": "radio_type",
+    "라디오유형": "radio_type",
+    "라디오타입": "radio_type",
+    "라디오형식": "radio_type",
+    "phy유형": "radio_type",
+    "phy종류": "radio_type",
+    "phy타입": "radio_type",
     "라디오유형": "radio_type",
     "라디오종류": "radio_type",
     "무선유형": "radio_type",
@@ -135,6 +161,13 @@ NEARBY_AP_FIELD_MAP: dict[str, str] = {
     "신호": "signal_percent",
     "radiotype": "radio_standard",
     "phytype": "radio_standard",
+    "라디오종류": "radio_standard",
+    "라디오유형": "radio_standard",
+    "라디오타입": "radio_standard",
+    "라디오형식": "radio_standard",
+    "phy유형": "radio_standard",
+    "phy종류": "radio_standard",
+    "phy타입": "radio_standard",
     "라디오유형": "radio_standard",
     "라디오종류": "radio_standard",
     "무선유형": "radio_standard",
@@ -190,7 +223,7 @@ def parse_netsh_wlan_output(raw_output: str) -> WirelessInfo:
     info.state = localize_wireless_state(values.get("state", ""))
     info.ssid = values.get("ssid", "")
     info.bssid = values.get("bssid", "")
-    info.radio_type = values.get("radio_type", "")
+    info.radio_type = normalize_radio_standard(values.get("radio_type", "") or extract_radio_standard(raw_output))
     info.channel = values.get("channel", "")
     info.band = values.get("band", "") or band_from_channel(info.channel, info.radio_type)
     info.receive_rate_mbps = values.get("receive_rate_mbps", "")
@@ -255,6 +288,9 @@ def parse_netsh_wlan_networks_output(raw_output: str) -> list[NearbyAccessPoint]
         if current_ap is None:
             return
         current_ap.raw_block = "\n".join(current_block).strip()
+        current_ap.radio_standard = normalize_radio_standard(
+            current_ap.radio_standard or extract_radio_standard(current_ap.raw_block)
+        )
         current_ap.band = current_ap.band or band_from_channel(current_ap.channel, current_ap.radio_standard)
         access_points.append(current_ap)
         current_ap = None
@@ -319,7 +355,7 @@ def parse_netsh_wlan_networks_output(raw_output: str) -> list[NearbyAccessPoint]
             match = re.search(r"(\d+)", text_value)
             current_ap.signal_percent = int(match.group(1)) if match else None
         elif field_name == "radio_standard":
-            current_ap.radio_standard = text_value
+            current_ap.radio_standard = normalize_radio_standard(text_value)
         elif field_name == "band":
             current_ap.band = text_value
         elif field_name == "channel":

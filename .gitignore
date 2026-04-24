@@ -16,6 +16,7 @@ logs/exports/*
 !logs/exports/.gitkeep
 
 config/app_config.json
+config/*_runtime.json
 config/public_iperf_servers_cache.json
 config/oui_cache.json
 config/ftp_keys/*

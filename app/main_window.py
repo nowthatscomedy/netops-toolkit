@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
         self._job_runner = JobRunner(self.state.thread_pool, self)
         self._active_workers = self._job_runner._active_workers
         self._update_busy = False
+        self._startup_activated = False
         self.setWindowTitle("NetOps Toolkit")
         self.resize(1120, 760)
         self.setDockOptions(
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.restart_admin_action.triggered.connect(self._restart_as_admin)
+        self.tab_widget.currentChanged.connect(self._handle_main_tab_changed)
         self.toggle_log_view_action.toggled.connect(self._set_log_dock_visible)
         self.ping_result_view_action.toggled.connect(
             lambda checked: self.diagnostics_tab.set_result_dock_visible("ping", checked)
@@ -186,6 +188,30 @@ class MainWindow(QMainWindow):
         self._sync_log_dock_state()
         self._sync_result_dock_action("ping", ping_result_visible)
         self._sync_result_dock_action("tcp", tcp_result_visible)
+
+    def activate_startup_loading(self) -> None:
+        if self._startup_activated:
+            return
+        self._startup_activated = True
+        QTimer.singleShot(0, self._start_visible_tab_initial_load)
+
+    def _handle_main_tab_changed(self, index: int) -> None:
+        if not self._startup_activated:
+            return
+        self._start_tab_initial_load(index)
+
+    def _start_visible_tab_initial_load(self) -> None:
+        self._start_tab_initial_load(self.tab_widget.currentIndex())
+
+    def _start_tab_initial_load(self, index: int) -> None:
+        if index == 0:
+            self.interface_tab.start_initial_refresh()
+            return
+        if index == 1:
+            self.diagnostics_tab.start_initial_refresh()
+            return
+        if index == 2:
+            self.wireless_tab.start_initial_refresh()
 
     def _save_ui_state(self) -> None:
         config = dict(self.state.app_config)

@@ -22,6 +22,7 @@ from app.services.public_iperf_service import PublicIperfService
 from app.services.scp_client_service import ScpClientService
 from app.services.scp_server_service import ScpServerService
 from app.services.tcp_check_service import TcpCheckService
+from app.services.tftp_service import TftpService
 from app.services.trace_service import TraceService
 from app.services.update_service import UpdateService
 from app.services.wireless_service import WirelessService
@@ -56,6 +57,7 @@ class AppState(QObject):
         self.ftp_runtime: dict = {}
         self.scp_profiles: list[ScpProfile] = []
         self.scp_runtime: dict = {}
+        self.tftp_runtime: dict = {}
         self.reload_config_files()
 
         self.powershell_service = PowerShellService(self.logger)
@@ -71,6 +73,7 @@ class AppState(QObject):
         self.ftp_server_service = FtpServerService(self.paths, self.logger)
         self.scp_client_service = ScpClientService(self.paths, self.logger)
         self.scp_server_service = ScpServerService(self.paths, self.logger)
+        self.tftp_service = TftpService(self.paths, self.logger)
         self.iperf_service = IperfService(self.paths, self.logger)
         self.public_iperf_service = PublicIperfService(self.paths, self.logger)
         self.update_service = UpdateService(self.logger)
@@ -111,6 +114,8 @@ class AppState(QObject):
         self.scp_profiles = [ScpProfile.from_dict(item) for item in load_json(self.paths.scp_profiles, [])]
         loaded_scp_runtime = load_json(self.paths.scp_runtime, {})
         self.scp_runtime = loaded_scp_runtime if isinstance(loaded_scp_runtime, dict) else {}
+        loaded_tftp_runtime = load_json(self.paths.tftp_runtime, {})
+        self.tftp_runtime = loaded_tftp_runtime if isinstance(loaded_tftp_runtime, dict) else {}
         if migrated_legacy:
             save_json(self.paths.ip_profiles, [profile.to_dict() for profile in self.ip_profiles])
             save_json(self.paths.vendor_presets, [])
@@ -160,4 +165,9 @@ class AppState(QObject):
         self.scp_runtime = dict(runtime)
         save_json(self.paths.scp_runtime, self.scp_runtime)
         self.logger.info("Saved scp_runtime.json")
+
+    def save_tftp_runtime(self, runtime: dict) -> None:
+        self.tftp_runtime = dict(runtime)
+        save_json(self.paths.tftp_runtime, self.tftp_runtime)
+        self.logger.info("Saved tftp_runtime.json")
 
