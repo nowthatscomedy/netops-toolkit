@@ -6,7 +6,7 @@ from datetime import datetime
 from threading import Event
 from typing import Callable
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from app.app_state import AppState
 from app.models.network_models import PublicIperfServer
 from app.models.result_models import PingResult, TcpCheckResult
-from app.ui.common import JobRunner
+from app.ui.common import JobRunner, nullable_number_sort_value, sortable_table_item
 from app.ui.tabs.diagnostics.dns import DnsDiagnosticsMixin
 from app.ui.tabs.diagnostics.ftp import FtpDiagnosticsMixin
 from app.ui.tabs.diagnostics.iperf import IperfDiagnosticsMixin
@@ -182,6 +182,24 @@ class DiagnosticsTab(
         output.setFont(self.fixed_font)
         output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         return output
+
+    def _sortable_table_item(self, text: str, sort_value=None) -> QTableWidgetItem:
+        return sortable_table_item(text, sort_value)
+
+    def _capture_sort_state(self, table: QTableWidget) -> tuple[bool, int, Qt.SortOrder]:
+        header = table.horizontalHeader()
+        return table.isSortingEnabled(), header.sortIndicatorSection(), header.sortIndicatorOrder()
+
+    def _restore_sort_state(self, table: QTableWidget, sort_state: tuple[bool, int, Qt.SortOrder]) -> None:
+        sorting_enabled, section, order = sort_state
+        if not sorting_enabled:
+            return
+        table.setSortingEnabled(True)
+        if 0 <= section < table.columnCount():
+            table.sortItems(section, order)
+
+    def _nullable_number_sort_value(self, value: float | int | None) -> tuple[int, float]:
+        return nullable_number_sort_value(value)
 
     def _build_subnet_metric_card(self, title: str, accent_color: str) -> tuple[QWidget, QLabel]:
         card = QWidget()

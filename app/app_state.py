@@ -18,6 +18,7 @@ from app.services.network_interface_service import NetworkInterfaceService
 from app.services.oui_service import OuiService
 from app.services.ping_service import PingService
 from app.services.powershell_service import PowerShellService
+from app.services.public_ip_service import PublicIpService
 from app.services.public_iperf_service import PublicIperfService
 from app.services.scp_client_service import ScpClientService
 from app.services.scp_server_service import ScpServerService
@@ -67,6 +68,7 @@ class AppState(QObject):
         self.ping_service = PingService(self.logger)
         self.tcp_check_service = TcpCheckService(self.logger)
         self.dns_service = DnsService(self.powershell_service, self.logger)
+        self.public_ip_service = PublicIpService(self.logger)
         self.trace_service = TraceService(self.logger)
         self.wireless_service = WirelessService(self.powershell_service, self.logger, self.oui_service)
         self.ftp_client_service = FtpClientService(self.paths, self.logger)

@@ -48,12 +48,14 @@ class ToolsDiagnosticsMixin:
         layout = QVBoxLayout(page)
 
         button_row = QHBoxLayout()
+        self.public_ip_button = QPushButton("공인 IP 확인")
         self.snapshot_button = QPushButton("현재 인터페이스")
         self.ipconfig_button = QPushButton("ipconfig /all")
         self.route_button = QPushButton("route print")
         self.arp_button = QPushButton("arp -a")
         self.flush_dns_button = QPushButton("DNS 캐시 비우기")
         for button in (
+            self.public_ip_button,
             self.snapshot_button,
             self.ipconfig_button,
             self.route_button,
@@ -74,6 +76,7 @@ class ToolsDiagnosticsMixin:
         self.flush_dns_button.clicked.connect(
             lambda: self._run_tools_command(self.state.dns_service.flush_dns_cache)
         )
+        self.public_ip_button.clicked.connect(self.check_public_ip)
         return page
 
     def _build_subnet_calc_page(self) -> QWidget:
@@ -286,6 +289,19 @@ class ToolsDiagnosticsMixin:
             on_result=lambda result: self.tools_output.setPlainText(result.details or result.message),
             error_title="도구 실행 실패",
         )
+
+    def check_public_ip(self) -> None:
+        self.tools_output.setPlainText("공인 IP를 확인하는 중입니다...")
+        self._start_worker(
+            self.state.public_ip_service.check_public_ip,
+            on_result=self._show_public_ip_result,
+            error_title="공인 IP 확인 실패",
+        )
+
+    def _show_public_ip_result(self, result: OperationResult) -> None:
+        self.tools_output.setPlainText(result.details or result.message)
+        if not result.success:
+            QMessageBox.warning(self, "공인 IP 확인 실패", result.details or result.message)
 
     def calculate_subnet_from_tools_inputs(self) -> None:
         ip_text = self.subnet_calc_ip_edit.text().strip()

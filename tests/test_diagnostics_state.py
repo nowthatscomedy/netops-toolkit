@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from PySide6.QtCore import Qt
+
 from app.models.ftp_models import FtpProfile
 from app.models.network_models import NetworkAdapterInfo, OuiRecord, PublicIperfServer
-from app.models.result_models import OperationResult
+from app.models.result_models import OperationResult, PingResult, TcpCheckResult
 from app.models.scp_models import ScpProfile
 from app.ui.tabs.diagnostics_tab import DiagnosticsTab
 
@@ -413,3 +415,120 @@ def test_diagnostics_state_save_and_restore_shape(qapp, tmp_path):
     restored_saved = tab.save_ui_state()
     assert restored_saved["tools"]["version"] == 2
     assert restored_saved["tools"]["oui_targets"] == "Legacy,AA:BB:CC:DD:EE:FF"
+
+
+def test_ping_table_sorts_numeric_columns_and_updates_sorted_rows(qapp, tmp_path):
+    tab = DiagnosticsTab(build_fake_state(tmp_path))
+
+    tab._handle_ping_progress(
+        {
+            "result": PingResult(
+                name="slow",
+                target="192.0.2.100",
+                success=True,
+                status="정상",
+                packet_loss=0,
+                sent=10,
+                received=10,
+                min_rtt=100,
+                avg_rtt=100,
+                max_rtt=100,
+                last_seen="10:00:00",
+            ),
+            "line": "slow reply",
+        }
+    )
+    tab._handle_ping_progress(
+        {
+            "result": PingResult(
+                name="fast",
+                target="192.0.2.9",
+                success=True,
+                status="정상",
+                packet_loss=0,
+                sent=2,
+                received=2,
+                min_rtt=9,
+                avg_rtt=9,
+                max_rtt=9,
+                last_seen="10:00:01",
+            ),
+            "line": "fast reply",
+        }
+    )
+
+    tab.ping_table.sortItems(8, Qt.SortOrder.AscendingOrder)
+    assert tab._cell(tab.ping_table, 0, 8) == "9.0"
+
+    tab._handle_ping_progress(
+        {
+            "result": PingResult(
+                name="slow",
+                target="192.0.2.100",
+                success=True,
+                status="정상",
+                packet_loss=0,
+                sent=11,
+                received=11,
+                min_rtt=5,
+                avg_rtt=5,
+                max_rtt=5,
+                last_seen="10:00:02",
+            ),
+            "line": "slow faster",
+        }
+    )
+
+    assert tab._cell(tab.ping_table, 0, 0) == "slow"
+    assert tab._cell(tab.ping_table, 0, 8) == "5.0"
+    assert tab.ping_row_map[("slow", "192.0.2.100")] == 0
+
+
+def test_tcp_table_sorts_port_and_loss_as_numbers(qapp, tmp_path):
+    tab = DiagnosticsTab(build_fake_state(tmp_path))
+
+    tab._handle_tcp_progress(
+        {
+            "result": TcpCheckResult(
+                name="high",
+                target="198.51.100.10",
+                port=100,
+                status="열림",
+                sent=4,
+                successful=4,
+                failed=0,
+                packet_loss=0,
+                min_response_ms=100,
+                response_ms=100,
+                max_response_ms=100,
+                last_seen="10:00:00",
+            ),
+            "line": "high open",
+        }
+    )
+    tab._handle_tcp_progress(
+        {
+            "result": TcpCheckResult(
+                name="low",
+                target="198.51.100.10",
+                port=9,
+                status="응답 없음",
+                sent=4,
+                successful=0,
+                failed=4,
+                packet_loss=100,
+                min_response_ms=None,
+                response_ms=None,
+                max_response_ms=None,
+                last_seen="10:00:01",
+            ),
+            "line": "low timeout",
+        }
+    )
+
+    tab.tcp_table.sortItems(2, Qt.SortOrder.AscendingOrder)
+    assert tab._cell(tab.tcp_table, 0, 2) == "9"
+    assert tab._cell(tab.tcp_table, 1, 2) == "100"
+
+    tab.tcp_table.sortItems(7, Qt.SortOrder.DescendingOrder)
+    assert tab._cell(tab.tcp_table, 0, 7) == "100%"

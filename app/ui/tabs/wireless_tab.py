@@ -23,13 +23,13 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app.app_state import AppState
 from app.models.network_models import NearbyAccessPoint, WirelessInfo
+from app.ui.common import sortable_table_item
 from app.utils.parser import summarize_channels
 from app.utils.threading_utils import FunctionWorker
 
@@ -204,11 +204,13 @@ class WirelessTab(QWidget):
         self.nearby_table.setAlternatingRowColors(True)
         self.nearby_table.setWordWrap(False)
         self.nearby_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.nearby_table.setSortingEnabled(True)
         self.nearby_table.setHorizontalHeaderLabels(
             ["SSID", "BSSID", "벤더", "신호", "무선 규격", "대역", "채널", "보안", "채널 사용률", "연결 단말"]
         )
         self.nearby_table.verticalHeader().setVisible(False)
         self._configure_nearby_table_columns()
+        self.nearby_table.sortByColumn(3, Qt.SortOrder.DescendingOrder)
         nearby_layout.addWidget(self.nearby_table, 1)
         layout.addWidget(nearby_group, 2)
 
@@ -222,7 +224,7 @@ class WirelessTab(QWidget):
         self.nearby_search_edit.textChanged.connect(self._apply_nearby_view)
         self.nearby_band_filter.currentIndexChanged.connect(self._apply_nearby_view)
         self.nearby_security_filter.currentIndexChanged.connect(self._apply_nearby_view)
-        self.nearby_sort_combo.currentIndexChanged.connect(self._apply_nearby_view)
+        self.nearby_sort_combo.currentIndexChanged.connect(self._handle_nearby_sort_change)
         self.nearby_connected_only_check.toggled.connect(self._apply_nearby_view)
 
     def _status_column_count(self) -> int:
@@ -345,6 +347,9 @@ class WirelessTab(QWidget):
         self._apply_nearby_view()
 
     def _apply_nearby_view(self) -> None:
+        sort_state = self._capture_table_sort_state(self.nearby_table)
+        if sort_state[0]:
+            self.nearby_table.setSortingEnabled(False)
         self.nearby_table.setRowCount(0)
         filtered_access_points = self._filtered_nearby_access_points()
         current_bssid = self._normalize_bssid(self.current_info.bssid if self.current_info else "")
@@ -369,10 +374,22 @@ class WirelessTab(QWidget):
                 ),
                 str(access_point.connected_stations) if access_point.connected_stations is not None else "-",
             ]
+            sort_values = [
+                (access_point.ssid or "").lower(),
+                self._normalize_bssid(access_point.bssid),
+                (access_point.vendor or "").lower(),
+                self._number_or_low(access_point.signal_percent),
+                self._radio_standard_sort_value(access_point.radio_standard),
+                self._band_sort_value(access_point.band),
+                self._channel_sort_value(access_point.channel),
+                security.lower(),
+                self._number_or_low(access_point.channel_utilization_percent),
+                self._number_or_low(access_point.connected_stations),
+            ]
 
             is_current_ap = bool(current_bssid and self._normalize_bssid(access_point.bssid) == current_bssid)
             for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
+                item = sortable_table_item(value, sort_values[column])
                 if column == 3 and access_point.signal_percent is not None:
                     if access_point.signal_percent >= 70:
                         item.setForeground(QColor("#1b5e20"))
@@ -392,7 +409,62 @@ class WirelessTab(QWidget):
                         item.setForeground(QColor("#1b5e20"))
                 self.nearby_table.setItem(row, column, item)
 
+        self._restore_table_sort_state(self.nearby_table, sort_state)
         self._update_nearby_summary(filtered_access_points)
+
+    def _handle_nearby_sort_change(self) -> None:
+        sort_mode = str(self.nearby_sort_combo.currentData() or "signal_desc")
+        column, order = {
+            "signal_desc": (3, Qt.SortOrder.DescendingOrder),
+            "channel_asc": (6, Qt.SortOrder.AscendingOrder),
+            "utilization_desc": (8, Qt.SortOrder.DescendingOrder),
+            "ssid_asc": (0, Qt.SortOrder.AscendingOrder),
+            "vendor_asc": (2, Qt.SortOrder.AscendingOrder),
+        }.get(sort_mode, (3, Qt.SortOrder.DescendingOrder))
+        self.nearby_table.sortByColumn(column, order)
+        self._apply_nearby_view()
+
+    def _capture_table_sort_state(self, table: QTableWidget) -> tuple[bool, int, Qt.SortOrder]:
+        header = table.horizontalHeader()
+        return table.isSortingEnabled(), header.sortIndicatorSection(), header.sortIndicatorOrder()
+
+    def _restore_table_sort_state(self, table: QTableWidget, sort_state: tuple[bool, int, Qt.SortOrder]) -> None:
+        sorting_enabled, section, order = sort_state
+        if not sorting_enabled:
+            return
+        table.setSortingEnabled(True)
+        if 0 <= section < table.columnCount():
+            table.sortItems(section, order)
+
+    def _number_or_low(self, value: float | int | None) -> float:
+        if value is None:
+            return -1.0
+        return float(value)
+
+    def _band_sort_value(self, band_text: str) -> float:
+        normalized = (band_text or "").replace(" ", "").lower()
+        if "2.4" in normalized:
+            return 2.4
+        match = re.search(r"\d+(?:\.\d+)?", normalized)
+        if not match:
+            return -1.0
+        return float(match.group(0))
+
+    def _radio_standard_sort_value(self, radio_standard: str) -> tuple[int, int, str]:
+        normalized = re.sub(r"\s+", "", radio_standard or "").lower()
+        order = {
+            "802.11be": 7,
+            "802.11ax": 6,
+            "802.11ac": 5,
+            "802.11n": 4,
+            "802.11g": 3,
+            "802.11a": 2,
+            "802.11b": 1,
+        }
+        for token, rank in order.items():
+            if token in normalized:
+                return (0, rank, normalized)
+        return (1, 0, normalized)
 
     def _filtered_nearby_access_points(self) -> list[NearbyAccessPoint]:
         search_text = self.nearby_search_edit.text().strip().lower()

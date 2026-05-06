@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -65,6 +64,7 @@ class TcpDiagnosticsMixin:
         )
         self._setup_table(self.tcp_table)
         self._set_stretch_columns(self.tcp_table, 1)
+        self.tcp_table.setSortingEnabled(True)
 
         self.tcp_log = self._output()
         self.tcp_log_panel = self._build_log_panel("실시간 로그", self.tcp_log)
@@ -127,7 +127,11 @@ class TcpDiagnosticsMixin:
         self.tcp_log.appendPlainText(line)
         self.tcp_log_lines.setdefault(key, []).append(line)
 
-        row = self.tcp_row_map.get(key)
+        sort_state = self._capture_sort_state(self.tcp_table)
+        if sort_state[0]:
+            self.tcp_table.setSortingEnabled(False)
+
+        row = self._find_tcp_row(key)
         if row is None:
             row = self.tcp_table.rowCount()
             self.tcp_table.insertRow(row)
@@ -147,8 +151,22 @@ class TcpDiagnosticsMixin:
             f"{result.max_response_ms:.2f}" if result.max_response_ms is not None else "-",
             result.last_seen or "-",
         ]
+        sort_values = [
+            result.name.casefold(),
+            result.target.casefold(),
+            result.port,
+            result.status.casefold(),
+            result.sent,
+            result.successful,
+            result.failed,
+            result.packet_loss,
+            self._nullable_number_sort_value(result.min_response_ms),
+            self._nullable_number_sort_value(result.response_ms),
+            self._nullable_number_sort_value(result.max_response_ms),
+            result.last_seen or "",
+        ]
         for column, value in enumerate(values):
-            item = QTableWidgetItem(value)
+            item = self._sortable_table_item(value, sort_values[column])
             if column == 3:
                 if result.status == "열림":
                     item.setForeground(QColor("#1b5e20"))
@@ -157,6 +175,9 @@ class TcpDiagnosticsMixin:
                 else:
                     item.setForeground(QColor("#b71c1c"))
             self.tcp_table.setItem(row, column, item)
+        self.tcp_row_map[key] = row
+        self._restore_sort_state(self.tcp_table, sort_state)
+        self._rebuild_tcp_row_map()
 
     def _finish_tcp(self, results: list[TcpCheckResult]) -> None:
         self.tcp_results = results
@@ -168,3 +189,34 @@ class TcpDiagnosticsMixin:
     def cancel_tcp_check(self) -> None:
         if self.tcp_cancel_event:
             self.tcp_cancel_event.set()
+
+    def _find_tcp_row(self, key: tuple[str, str, int]) -> int | None:
+        mapped_row = self.tcp_row_map.get(key)
+        if mapped_row is not None and self._tcp_row_matches(mapped_row, key):
+            return mapped_row
+        for row in range(self.tcp_table.rowCount()):
+            if self._tcp_row_matches(row, key):
+                return row
+        return None
+
+    def _tcp_row_matches(self, row: int, key: tuple[str, str, int]) -> bool:
+        if row < 0 or row >= self.tcp_table.rowCount():
+            return False
+        return (
+            self._cell(self.tcp_table, row, 0) == key[0]
+            and self._cell(self.tcp_table, row, 1) == key[1]
+            and self._cell(self.tcp_table, row, 2) == str(key[2])
+        )
+
+    def _rebuild_tcp_row_map(self) -> None:
+        self.tcp_row_map.clear()
+        for row in range(self.tcp_table.rowCount()):
+            name = self._cell(self.tcp_table, row, 0)
+            target = self._cell(self.tcp_table, row, 1)
+            port_text = self._cell(self.tcp_table, row, 2)
+            try:
+                port = int(port_text)
+            except ValueError:
+                continue
+            if name or target:
+                self.tcp_row_map[(name, target, port)] = row

@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -62,6 +61,7 @@ class PingDiagnosticsMixin:
         )
         self._setup_table(self.ping_table)
         self._set_stretch_columns(self.ping_table, 1)
+        self.ping_table.setSortingEnabled(True)
 
         self.ping_log = self._output()
         self.ping_log_panel = self._build_log_panel("실시간 로그", self.ping_log)
@@ -127,7 +127,11 @@ class PingDiagnosticsMixin:
         self.ping_log.appendPlainText(line)
         self.ping_log_lines.setdefault(key, []).append(line)
 
-        row = self.ping_row_map.get(key)
+        sort_state = self._capture_sort_state(self.ping_table)
+        if sort_state[0]:
+            self.ping_table.setSortingEnabled(False)
+
+        row = self._find_ping_row(key)
         if row is None:
             row = self.ping_table.rowCount()
             self.ping_table.insertRow(row)
@@ -146,9 +150,22 @@ class PingDiagnosticsMixin:
             f"{result.max_rtt:.1f}" if result.max_rtt is not None else "-",
             result.last_seen or "-",
         ]
+        sort_values = [
+            result.name.casefold(),
+            result.target.casefold(),
+            result.status.casefold(),
+            result.sent,
+            result.received,
+            max(result.sent - result.received, 0),
+            result.packet_loss,
+            self._nullable_number_sort_value(result.min_rtt),
+            self._nullable_number_sort_value(result.avg_rtt),
+            self._nullable_number_sort_value(result.max_rtt),
+            result.last_seen or "",
+        ]
         for column, value in enumerate(values):
-            item = QTableWidgetItem(value)
-            if column == 3:
+            item = self._sortable_table_item(value, sort_values[column])
+            if column == 2:
                 if result.status == "정상":
                     item.setForeground(QColor("#1b5e20"))
                 elif result.status in ("일부 손실", "시간 초과"):
@@ -156,6 +173,9 @@ class PingDiagnosticsMixin:
                 else:
                     item.setForeground(QColor("#b71c1c"))
             self.ping_table.setItem(row, column, item)
+        self.ping_row_map[key] = row
+        self._restore_sort_state(self.ping_table, sort_state)
+        self._rebuild_ping_row_map()
 
     def _finish_ping(self, results: list[PingResult]) -> None:
         self.ping_results = results
@@ -167,3 +187,25 @@ class PingDiagnosticsMixin:
     def cancel_ping(self) -> None:
         if self.ping_cancel_event:
             self.ping_cancel_event.set()
+
+    def _find_ping_row(self, key: tuple[str, str]) -> int | None:
+        mapped_row = self.ping_row_map.get(key)
+        if mapped_row is not None and self._ping_row_matches(mapped_row, key):
+            return mapped_row
+        for row in range(self.ping_table.rowCount()):
+            if self._ping_row_matches(row, key):
+                return row
+        return None
+
+    def _ping_row_matches(self, row: int, key: tuple[str, str]) -> bool:
+        if row < 0 or row >= self.ping_table.rowCount():
+            return False
+        return self._cell(self.ping_table, row, 0) == key[0] and self._cell(self.ping_table, row, 1) == key[1]
+
+    def _rebuild_ping_row_map(self) -> None:
+        self.ping_row_map.clear()
+        for row in range(self.ping_table.rowCount()):
+            name = self._cell(self.ping_table, row, 0)
+            target = self._cell(self.ping_table, row, 1)
+            if name or target:
+                self.ping_row_map[(name, target)] = row
